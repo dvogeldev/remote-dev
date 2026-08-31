@@ -1,0 +1,7 @@
+# Host-plane bounce kit: Homebrew on Linux + chezmoi VPS profile
+
+The operator’s Herdr panes on `grr-remote-dev-01` need current fish/nvim/yazi/lazygit/zoxide/eza/bat/rg/fd/fzf. Ubuntu 24.04 apt is too old or missing those tools; Nix was a standing “no”; Distrobox/Devbox recreate the rejected `dev-base` desktop; deb.griffo.io is a third-party apt source that paywalls installs after 1 Oct 2026.
+
+Decide: install the bounce kit with **Homebrew on Linux** (`/home/linuxbrew/.linuxbrew`) on the VPS only. Login stays `/bin/bash`; Herdr `default_shell` is brew’s fish; `herdr.service` PATH includes the linuxbrew prefix. Herdr itself stays `install.sh` + systemd. **Chezmoi** (`dvogeldev/dotfiles`) writes the user lane into `/home/david/.config`. On `grr` the apply ignores Hypr/browsers/espanso and does not install `pass` (ADR-0007). A `Brewfile` bundles the kit and runs only on `grr`. **mise** is on the host plane (Homebrew) so the operator and Hermes can pin Node and Python; that does not replace per-project Dev Containers. `host-plane/mise.toml` is the VPS tool list (not the laptop’s bun/go/grok file). The Omarchy laptop keeps pacman; no linuxbrew there. This repo owns a thin bootstrap (install brew, bundle, patch Herdr PATH, mise install), not a second copy of the dotfiles.
+
+Rejected: Nix/home-manager (and NixOS-the-laptop, which drops Omarchy); brew on Omarchy; project-local Devbox; Distrobox export/enter; Ubuntu-archive nvim 0.9.5 as the editor.

@@ -1,0 +1,6 @@
+# Host-plane Node/Python via mise. Project toolchains stay in Dev Containers.
+# Do not copy the laptop mise.toml (bun/go/grok) onto grr.
+
+[tools]
+node = "lts"
+python = "3.13"

@@ -1,0 +1,15 @@
+# Host-plane bounce kit for grr-remote-dev-01 (ADR-0008).
+# Do not add herdr — that stays install.sh + systemd (#10/#14).
+# Do not brew this file on the Omarchy laptop.
+
+brew "bat"
+brew "eza"
+brew "fd"
+brew "fish"
+brew "fzf"
+brew "lazygit"
+brew "mise"
+brew "neovim"
+brew "ripgrep"
+brew "yazi"
+brew "zoxide"
