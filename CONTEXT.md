@@ -38,6 +38,14 @@ _Avoid_: tmux; Herdr inside a project container as the default
 The Nous agent process (CLI, sessions, skills, profiles). The desk, not the library.
 _Avoid_: the stack, the VPS, the model
 
+**Hermes dashboard**:
+The shipped browser UI for managing Hermes: profiles, config, API keys, models, skills, MCP, sessions, analytics, logs, cron jobs, and a Chat tab that drives the real Hermes TUI over an authenticated PTY/WebSocket. Started by `hermes dashboard` on `127.0.0.1:9119` by default. Fail-closed on non-loopback binds (requires password / Nous OAuth / OIDC since the June 2026 hardening). This is the surface "Hermes GUI" maps to; do not build greenfield when the dashboard already covers it.
+_Avoid_: Hermes Web UI (the dashboard's product name); admin panel; management UI (too generic); a separate custom GUI project on top of `gateway:8642` for configs
+
+**Buzz (Block, Apache-2.0)**:
+A self-hostable Nostr-based collaboration workspace for humans and AI agents from Block, released 2026-07-21. A downstream concept in this stack: a possible future Hermes messaging-gateway channel like Telegram / Discord / Slack. Has its own cryptographic identity model per actor (Nostr keypairs) and does NOT replace the Hermes dashboard; the dashboard is the operator surface over Hermes, Buzz is the multi-actor collaboration plane that may one day have Hermes plugged in.
+_Avoid_: confusing Buzz with the Hermes GUI; treating Buzz as the Hermes dashboard's successor
+
 **Profile**:
 A whole Hermes agent identity (SOUL, skills, sessions, memory). Named for a **role**, not a model. Day one there is only `default` (operator). Further roles are cloned when that role has a skill.
 _Avoid_: `hermes-m27` / model SKUs as profile names; `--clone-all` for new roles
