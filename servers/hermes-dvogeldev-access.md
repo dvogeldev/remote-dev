@@ -18,7 +18,7 @@ Resolves [#35](https://github.com/dvogeldev/remote-dev/issues/35). Locks the AFK
 | Public hostname | `hermes.dvogeldev.com` |
 | Origin | `http://127.0.0.1:9119` (loopback, no TLS) |
 | Identity provider | One-time PIN (no Google/GitHub/Nous OAuth) |
-| Access policy | Allow `Emails` = `<your-email-here>`; everyone else blocked |
+| Access policy | Allow `Emails` = `dvogelca@gmail.com`; everyone else blocked |
 | Session duration | 24h |
 | Auth-required gate | `curl -fsS https://hermes.dvogeldev.com/api/status \| jq '.auth_required'` must return `true` |
 
@@ -101,6 +101,8 @@ ${EDITOR:-nano} ~/.cloudflared/config.yml
 chmod 0600 ~/.cloudflared/config.yml
 ```
 
+The template config also sets `originRequest.httpHostHeader: 127.0.0.1` on the public-hostname ingress rule. Hermes's DNS-rebinding guard rejects any Host header that isn't the loopback bind or a configured public URL, and Cloudflare's default passthrough of `Host: hermes.dvogeldev.com` fails that check. The rewrite lies to Hermes about its origin so the guard accepts; CF Access (upstream) keeps doing the actual auth — single layer, no Hermes-side creds needed.
+
 **2.3 Start the tunnel.**
 
 ```bash
@@ -148,6 +150,10 @@ curl -fsS https://hermes.dvogeldev.com/api/status | jq '.auth_required'
 ### Add a second identity
 
 - Zero Trust → **Access controls** → **Applications** → `hermes-dvogeldev` → **Policies** → `david-ops` → edit → add the email under **Include** → save. Takes effect on next login.
+
+### Why gmail instead of david@dvogeldev.com
+
+The original plan in [#31](https://github.com/dvogeldev/remote-dev/issues/31) was to allowlist `david@dvogeldev.com`. As of first deploy (2026-09-01), email hosting for `dvogeldev.com` isn't delivering Cloudflare Access OTPs to that address — so the allowlist was switched to `dvogelca@gmail.com` (the operator's working alias) to unblock sign-in. Once `dvogeldev.com` email is deliverable (MX, SPF, allowlist `notify.cloudflare.com` + IPs `104.30.16.2-7` on the gateway), update `cloudflare/dvd/ALLOWLIST_EMAIL` to `david@dvogeldev.com` and re-run `HERMES_TUNNEL_UUID=<UUID> ./scripts/provision-hermes-access.sh` — the policy PUT keeps `name=david-ops` and updates `include.email`. Then re-add `dvogelca@gmail.com` as a second identity under the same policy.
 
 ### Rotate the tunnel token
 
