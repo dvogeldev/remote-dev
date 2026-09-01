@@ -1,0 +1,18 @@
+[Unit]
+Description=Hermes dashboard (browser UI for managing Hermes Agent)
+Documentation=https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard
+After=network.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+# HERMES_DASHBOARD_PUBLIC_URL is intentionally NOT set: we bind loopback-only
+# and let CF Access (per #35) handle the public hostname / auth. Setting the
+# public URL on a loopback bind triggers Hermes's fail-closed gate (it can't
+# tell that CF Access is doing the auth) and refuses to start.
+ExecStart=%h/.local/bin/hermes dashboard --host 127.0.0.1 --port 9119 --no-open
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

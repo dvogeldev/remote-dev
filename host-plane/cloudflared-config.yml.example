@@ -1,0 +1,17 @@
+# Cloudflare Tunnel config for hermes-gui (#35).
+# Copy to ~/.cloudflared/config.yml on grr, replace <TUNNEL-UUID>
+# with the value printed by `cloudflared tunnel create hermes-gui`.
+# credentials-file points at the JSON the same command writes.
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /home/david/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: hermes.dvogeldev.com
+    service: http://127.0.0.1:9119
+    originRequest:
+      # Hermes' DNS-rebinding guard requires the Host header to match the
+      # loopback bind. Cloudflare Access handles auth upstream; the dashboard
+      # itself stays open on loopback. See #35.
+      httpHostHeader: 127.0.0.1
+  - service: http_status:404
