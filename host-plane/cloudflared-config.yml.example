@@ -9,4 +9,9 @@ credentials-file: /home/david/.cloudflared/<TUNNEL-UUID>.json
 ingress:
   - hostname: hermes.dvogeldev.com
     service: http://127.0.0.1:9119
+    originRequest:
+      # Hermes' DNS-rebinding guard requires the Host header to match the
+      # loopback bind. Cloudflare Access handles auth upstream; the dashboard
+      # itself stays open on loopback. See #35.
+      httpHostHeader: 127.0.0.1
   - service: http_status:404
