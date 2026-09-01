@@ -26,15 +26,17 @@ upsert_idp() {
   existing="$(api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/access/identity_providers" \
     | jq -r '.result[] | select(.type=="onetimepin") | .id' | head -n1 || true)"
   if [[ -n "$existing" ]]; then
-    echo "idp_uid=$existing (already configured)"
+    echo "idp_uid=$existing (already configured)" >&2
     echo "$existing"
     return
   fi
   local resp
   resp="$(api_post "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/access/identity_providers" \
     --data '{"name":"One-time PIN login","type":"onetimepin","config":{}}')"
-  echo "$resp" | jq -r '.result.id' | xargs -I{} echo "idp_uid={}"
-  echo "$resp" | jq -r '.result.id'
+  local uid
+  uid="$(echo "$resp" | jq -r '.result.id')"
+  echo "idp_uid=$uid" >&2
+  echo "$uid"
 }
 
 upsert_policy() {
@@ -42,15 +44,20 @@ upsert_policy() {
   existing="$(api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/access/policies" \
     | jq -r '.result[] | select(.name=="david-ops") | .id' | head -n1 || true)"
   if [[ -n "$existing" ]]; then
-    echo "policy_uid=$existing (already configured)"
+    local resp
+    resp="$(api_put "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/access/policies/$existing" \
+      --data "$(jq -n --arg email "$EMAIL" '{name:"david-ops",decision:"allow",include:[{email:{email:$email}}]}')")"
+    echo "policy_uid=$existing (updated allowlist to $EMAIL)" >&2
     echo "$existing"
     return
   fi
   local resp
   resp="$(api_post "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/access/policies" \
     --data "$(jq -n --arg email "$EMAIL" '{name:"david-ops",decision:"allow",include:[{email:{email:$email}}]}')")"
-  echo "$resp" | jq -r '.result.id' | xargs -I{} echo "policy_uid={}"
-  echo "$resp" | jq -r '.result.id'
+  local uid
+  uid="$(echo "$resp" | jq -r '.result.id')"
+  echo "policy_uid=$uid" >&2
+  echo "$uid"
 }
 
 upsert_app() {
@@ -59,7 +66,7 @@ upsert_app() {
   existing="$(api "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/access/apps" \
     | jq -r '.result[] | select(.name=="hermes-dvogeldev") | .id' | head -n1 || true)"
   if [[ -n "$existing" ]]; then
-    echo "app_uid=$existing (already configured)"
+    echo "app_uid=$existing (already configured)" >&2
     echo "$existing"
     return
   fi
@@ -73,51 +80,60 @@ upsert_app() {
       allowed_idps:[$idp],
       session_duration:"24h"
     }')")"
-  echo "$resp" | jq -r '.result.id' | xargs -I{} echo "app_uid={}"
-  echo "$resp" | jq -r '.result.id'
+  local uid
+  uid="$(echo "$resp" | jq -r '.result.id')"
+  echo "app_uid=$uid" >&2
+  echo "$uid"
 }
 
 upsert_dns_cname() {
   local uuid="$1"
   local target="${uuid}.cfargotunnel.com"
   local existing
+  # Token may lack Zone: DNS: Read; treat "can't list" the same as "exists" so
+  # the create step (which would also 403) is skipped. The CNAME was created
+  # out-of-band by `cloudflared tunnel route dns --overwrite-dns` per the runbook.
   existing="$(api "https://api.cloudflare.com/client/v4/zones/$ZONE/dns_records?type=CNAME&name=hermes.dvogeldev.com" \
-    | jq -r '.result[0].id // empty')"
+    | jq -r '.result[0].id // empty' 2>/dev/null || true)"
   if [[ -n "$existing" ]]; then
-    echo "dns_cname_id=$existing (already configured)"
+    echo "dns_cname_id=$existing (already configured)" >&2
     return
   fi
-  api_post "https://api.cloudflare.com/client/v4/zones/$ZONE/dns_records" \
+  if api_post "https://api.cloudflare.com/client/v4/zones/$ZONE/dns_records" \
     --data "$(jq -n --arg name "hermes.dvogeldev.com" --arg content "$target" '{
       type:"CNAME",
       name:$name,
       content:$content,
       proxied:true
-    }')" | jq -r '.result.id' | xargs -I{} echo "dns_cname_id={}"
+    }')" >/dev/null 2>&1; then
+    echo "dns_cname created via API"
+  else
+    echo "dns_cname: API write failed (token likely lacks Zone: DNS: Edit); ensure record exists via 'cloudflared tunnel route dns --overwrite-dns hermes-gui hermes.dvogeldev.com'" >&2
+  fi
 }
 
 main() {
   : "${HERMES_TUNNEL_UUID:?Set HERMES_TUNNEL_UUID to the tunnel UUID from 'cloudflared tunnel create hermes-gui' on grr}"
 
-  echo "=== Identity provider ==="
+  echo "=== Identity provider ===" >&2
   local idp
   idp="$(upsert_idp)"
   pass insert -m cloudflare/dvd/ACCESS_IDP_UID <<<"$idp" >/dev/null
 
-  echo "=== Allow policy ==="
+  echo "=== Allow policy ===" >&2
   local policy
   policy="$(upsert_policy)"
   pass insert -m cloudflare/dvd/ACCESS_POLICY_UID <<<"$policy" >/dev/null
 
-  echo "=== Access app ==="
+  echo "=== Access app ===" >&2
   local app
   app="$(upsert_app "$idp" "$policy")"
   pass insert -m cloudflare/dvd/ACCESS_APP_UID <<<"$app" >/dev/null
 
-  echo "=== DNS CNAME ==="
+  echo "=== DNS CNAME ===" >&2
   upsert_dns_cname "$HERMES_TUNNEL_UUID"
 
-  echo "done"
+  echo "done" >&2
 }
 
 main
