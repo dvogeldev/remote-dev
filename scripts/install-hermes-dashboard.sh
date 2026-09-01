@@ -39,7 +39,23 @@ if [[ ! -d "$HOME/.hermes/hermes-agent" ]]; then
   echo "WARN: ~/.hermes/hermes-agent missing; run install.sh before this script." >&2
   exit 1
 fi
-(cd "$HOME/.hermes/hermes-agent" && uv pip install -e ".[web,pty]")
+export PATH="$HOME/.hermes/bin:$HOME/.local/bin:$PATH"
+# Prefer Hermes's own uv; fall back to the user-local install (host-plane Brew doesn't ship uv).
+if [[ -x "$HOME/.hermes/bin/uv" ]]; then
+  UV="$HOME/.hermes/bin/uv"
+elif command -v uv >/dev/null; then
+  UV="$(command -v uv)"
+else
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  UV="$HOME/.local/bin/uv"
+fi
+# Hermes ships its own venv at ~/.hermes/hermes-agent/venv/; install the
+# web/pty extras into it (don't create a new venv or pollute system Python).
+if [[ ! -x "$HOME/.hermes/hermes-agent/venv/bin/python" ]]; then
+  echo "WARN: ~/.hermes/hermes-agent/venv/bin/python missing; install.sh did not set up the venv." >&2
+  exit 1
+fi
+(cd "$HOME/.hermes/hermes-agent" && "$UV" pip install --python "$HOME/.hermes/hermes-agent/venv/bin/python" -e ".[web,pty]")
 EOS
 }
 
