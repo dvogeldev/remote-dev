@@ -1,0 +1,14 @@
+[Unit]
+Description=Cloudflare Tunnel (hermes-gui)
+Documentation=https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/
+After=network.target hermes-dashboard.service
+Wants=hermes-dashboard.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cloudflared tunnel --config %h/.cloudflared/config.yml --no-autoupdate run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

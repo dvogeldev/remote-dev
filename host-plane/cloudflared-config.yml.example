@@ -1,0 +1,12 @@
+# Cloudflare Tunnel config for hermes-gui (#35).
+# Copy to ~/.cloudflared/config.yml on grr, replace <TUNNEL-UUID>
+# with the value printed by `cloudflared tunnel create hermes-gui`.
+# credentials-file points at the JSON the same command writes.
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /home/david/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: hermes.dvogeldev.com
+    service: http://127.0.0.1:9119
+  - service: http_status:404
