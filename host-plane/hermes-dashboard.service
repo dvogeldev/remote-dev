@@ -1,0 +1,15 @@
+[Unit]
+Description=Hermes dashboard (browser UI for managing Hermes Agent)
+Documentation=https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard
+After=network.target
+
+[Service]
+Type=simple
+Environment=HERMES_DASHBOARD_PUBLIC_URL=https://hermes.dvogeldev.com
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/.local/bin/hermes dashboard --host 127.0.0.1 --port 9119 --no-open
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
