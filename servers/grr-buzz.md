@@ -326,7 +326,7 @@ ts="$(date -u +%Y%m%dT%H%M%SZ)"
 #    needs to verify a past Hermes event against the old npub, this key is it.
 mkdir -p ~/.password-store/nostr/hermes-buzz/rotated
 pass show nostr/hermes-buzz/private-key \
-  | gpg -e -r "$(pass git config user.email 2>/dev/null || gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $8; exit}')" \
+  | gpg -e -r "David Vogel" \
   > /tmp/hermes-old.gpg
 # Insert into pass as a one-line entry (the whole encrypted blob)
 pass insert -m -f "nostr/hermes-buzz/rotated/$ts" < /tmp/hermes-old.gpg >/dev/null
@@ -403,36 +403,35 @@ tree (encrypted at rest by virtue of being in pass). The operator's
 calendar reminder is the cadence mechanism.
 
 ```bash
-# On grr — generate the dump, gpg-encrypt it (recipient = laptop key),
-# then pipe through ssh-agent so pass insert runs on the laptop.
+# On grr — generate the dump, then pipe through ssh-agent so pass insert
+# (which encrypts the entry with the operator's GPG key) runs on the laptop.
+# pass IS the encryption (ADR-0007); we do NOT pre-encrypt with gpg here.
 ssh grr <<'REMOTE'
 set -euo pipefail
 cd ~/.buzz
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
-out="/tmp/buzz-postgres-${ts}.sql"
-gpg_recv="$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $8; exit}')"
 docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
-  pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --clean \
-  > "$out"
-ls -la "$out"
-gpg -e -r "$gpg_recv" "$out"
-echo "$out"
-ls -la "${out}.gpg"
+  pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --clean --if-exists \
+  > "/tmp/buzz-postgres-${ts}.sql"
+ls -la "/tmp/buzz-postgres-${ts}.sql"
 REMOTE
 
-# Pull the .gpg from grr, push into pass, clean up.
+# Pull the dump from grr, push into pass (pass-encrypts it), clean up.
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
-ssh grr "cat /tmp/buzz-postgres-${ts}.sql.gpg" \
-  | pass insert -m -f "buzz/postgres-dumps/${ts}.sql.gpg"
-ssh grr "rm -f /tmp/buzz-postgres-${ts}.sql /tmp/buzz-postgres-${ts}.sql.gpg"
-
-# Retention: 90 days. Delete older entries:
-for old in $(pass ls buzz/postgres-dumps/ 2>/dev/null \
-              | sed -n 's/.*buzz\/postgres-dumps\/\([0-9TZ]*\)\.sql\.gpg.*/\1/p' \
-              | sort | head -n -12); do
-  pass rm -f "buzz/postgres-dumps/${old}.sql.gpg"
-done
+ssh grr "cat /tmp/buzz-postgres-${ts}.sql" \
+  | pass insert -m -f "buzz/postgres-dumps/${ts}.sql"
+ssh grr "rm -f /tmp/buzz-postgres-${ts}.sql"
 ```
+
+Notes:
+- `--clean --if-exists` (pg_dump 17) makes the dump replayable into an
+  empty DB after a fresh install — without `--if-exists`, the DROP
+  statements fail on tables that don't yet exist.
+- We do NOT `gpg -e` the dump before `pass insert`. pass already encrypts
+  with the operator's GPG key (ADR-0007); double-encryption makes
+  restore a two-stage process that install-buzz.sh can't run unattended.
+- The `.sql` extension (not `.sql.gpg`) reflects that the on-disk file in
+  pass is the SQL plaintext; pass handles the encryption envelope.
 
 **Restore** (also from grr):
 
@@ -441,10 +440,14 @@ ssh grr
 cd ~/.buzz
 # Pick the latest dump; in a real recovery you'd pin to a specific ts.
 dump="$(pass ls buzz/postgres-dumps/ | tail -n 1 | sed 's/.*buzz\/postgres-dumps\///;s/  *//')"
-gpg -d "$HOME/.password-store/buzz/postgres-dumps/${dump}" \
+cat "$HOME/.password-store/buzz/postgres-dumps/${dump}" \
   | docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
       psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 ```
+
+Or just re-run `install-buzz.sh` — it detects the latest dump in pass,
+restores automatically before bringing the relay up. See "Recover from
+a fresh VPS" below.
 
 This procedure is **manual**, not a cron. The install scripts do NOT
 install a Postgres backup cron for v0 — the operator's calendar reminder
@@ -454,38 +457,42 @@ workspace holds more than ~7 days of irreplaceable activity (per ADR
 
 ### Recover from a fresh VPS
 
-**What works today** (without further follow-up):
+A rebuilt `grr` with `pass` intact can be restored to a working
+round-trip state with a single command from the laptop:
 
-- Install scripts (`install-buzz.sh`, `enable-hermes-buzz.sh`) detect
-  existing pass entries and skip regeneration. A rebuilt `grr` keeps
-  the same Hermes nsec and the same relay nsec.
-- After `install-buzz.sh` finishes, the relay boots with the right
-  identity and the right `BUZZ_DOMAIN`. NIP-42 AUTH from Hermes works
-  immediately.
-- `enable-hermes-buzz.sh` reuses the existing `BUZZ_HOME_CHANNEL` /
-  `BUZZ_CHANNELS` if they were populated, so the operator doesn't have
-  to remember the channel UUID.
+```bash
+HOST=grr ./scripts/install-buzz.sh
+```
 
-**What does NOT work today** (gaps that need follow-up):
+That's the whole story. The script:
 
-- **Postgres data is NOT restored.** Rebuilding the host from scratch
-  wipes the Docker volumes, and the install script does not pull a
-  `pg_dump` archive from pass before starting the relay. Until the
-  follow-up lands, the manual restore procedure (see "Restore" above) is
-  required: pick the latest `pass buzz/postgres-dumps/<date>.sql.gpg`
-  archive, decrypt on grr, pipe into `docker compose exec postgres
-  psql`. Events, channels, members, audit log, FTS index all come back
-  from that one archive.
-- **The demo room's `BUZZ_HOME_CHANNEL` / `BUZZ_CHANNELS` must be
-  re-populated** if the operator never persisted them somewhere other
-  than `~/.hermes/.env`. With this runbook in place that's unlikely (the
-  env file IS the source of truth post-install), but the follow-up
-  could surface them in the runbook's day-one checklist more loudly.
+1. Detects the existing relay keypair in `pass buzz/relay/private-key` and reuses it (ADR #0012, recovery of the relay identity).
+2. Detects the latest Postgres dump in `pass buzz/postgres-dumps/<date>.sql` and restores it into the freshly-provisioned Postgres before the relay boots.
+3. Brings up the full stack via the systemd unit (`buzz.service`).
+4. NIP-42 AUTH from Hermes works immediately because Hermes's nsec was also preserved (mirrored to `~/.hermes/.env` via `unwrap-hermes-env.sh`).
 
-The follow-up ticket — "install scripts need 'join existing workspace'
-mode" — covers both gaps. Until it ships, the recovery story requires
-the operator to (1) run the install scripts, (2) manually restore the
-Postgres dump, (3) restart the relay.
+After the install, run `enable-hermes-buzz.sh` once to (re)wire the
+plugin (idempotent — preserves existing `BUZZ_HOME_CHANNEL` /
+`CHANNELS` / `ALLOWED_USERS`). No manual Postgres restore required.
+
+**What's still manual**:
+
+- The very first install on a brand-new `grr` (no `pass`, no volumes)
+  is a chicken-and-egg: there's no dump to restore, no relay keypair to
+  reuse. That path goes through Phase 1 + Phase 2 of the day-one
+  procedure (operator creates the demo room, registers Hermes via
+  `buzz-admin add-member`, etc.).
+- An operator who runs `install-buzz.sh` mid-incident against a stack
+  with live data (DB has tables, dump is older than the live state) will
+  see the WARN message: the install refuses to overwrite and prompts for
+  a manual `cat $dump | psql` replay.
+
+**Verified end-to-end** (commit `cb30e39` follow-up): a
+`docker compose down -v` wipe followed by `install-buzz.sh` brought
+back the channel `085ef6ac-a52f-465d-b9bd-5f0c5d22594d` ("Hermes
+Demo"), its 1 operator message, and the 2 relay members. The relay
+container booted on the restored data and accepted NIP-42 AUTH from
+Hermes within 7 healthcheck retries.
 
 ## Files in this repo
 
@@ -494,7 +501,7 @@ Postgres dump, (3) restart the relay.
 | `host-plane/buzz-compose.yml` | Vendored Compose file (Apache-2.0 from upstream). |
 | `host-plane/buzz/.env.example` | Env template; copy to `~/.buzz/.env` on grr. |
 | `host-plane/buzz.service` | systemd --user unit driving `docker compose up`. |
-| `scripts/install-buzz.sh` | AFK install on grr. Re-run to rotate secrets / push the relay keypair. Detects existing `pass buzz/relay/private-key` and reuses it (recovery story, ADR #0012). |
+| `scripts/install-buzz.sh` | AFK install on grr. Re-run to rotate secrets / push the relay keypair. Detects existing `pass buzz/relay/private-key` and reuses it (recovery story, ADR #0012); detects latest Postgres dump in `pass buzz/postgres-dumps/` and restores before bringing the relay up (#51). |
 | `scripts/enable-hermes-buzz.sh` | Installs the real `buzz` CLI from the desktop AppImage; idempotently configures `~/.hermes/.env` (preserves existing `BUZZ_HOME_CHANNEL` / `BUZZ_CHANNELS` / `BUZZ_ALLOWED_USERS` on re-run); runs `hermes gateway install` + start. |
 | `scripts/smoke-buzz.sh` | Three-check smoke test (liveness, NIP-42 from inside the container, round-trip over SSH tunnel). |
 | `docs/adr/0011-buzz-host-plane-layout.md` | Loopback bind, vendoring policy, system unit shape. |
@@ -506,10 +513,6 @@ Postgres dump, (3) restart the relay.
   app, a public hostname, and a rate-limit strategy). v0 is loopback-only.
 - TLS via the upstream `compose.caddy.yml` override. Operator reaches the
   relay through Tailscale or SSH; no public TLS.
-- **Postgres restoration from `pass` archives during `install-buzz.sh`** —
-  currently the install script preserves the keypair but not the data
-  volumes. Tracked as the "join existing workspace mode" follow-up
-  ticket (parent #36).
 - Multi-relay / multi-community mode. The single-host, single-relay,
   single-community self-host default is the v0 shape per ADR #0011.
 - Production observability (Prometheus + alerting). Metrics are exposed on
@@ -523,10 +526,10 @@ Postgres dump, (3) restart the relay.
 
 ## Done means
 
-- `scripts/install-buzz.sh` runs cleanly on a fresh `grr` with `pass buzz/relay/private-key` already in place.
+- `scripts/install-buzz.sh` runs cleanly on a fresh `grr` with `pass buzz/relay/private-key` and `pass buzz/postgres-dumps/<latest>.sql` already in place (recovery story per ADR #0012 + #51).
 - `docker compose ps` on grr shows `relay`, `postgres`, `redis`, `minio`, `minio-init` all `running` (or `exited (0)` for `minio-init`).
 - `curl -fsS http://127.0.0.1:8080/_liveness` on grr returns the liveness line.
 - `scripts/smoke-buzz.sh` shows "AUTH challenge received" or a relay response in any of its three checks.
-- `buzz-admin add-member --pubkey <hermes-hex> --role bot` returns success.
+- After `docker compose down -v` + re-running `install-buzz.sh`, the previously-stored channel + messages + members reappear (verified commit `<follow-up>`).
 - An operator-created room in the Buzz desktop client results in Hermes responding to an `@hermes` mention within a few seconds (round-trip text demo, the [#36](https://github.com/dvogeldev/remote-dev/issues/36) destination gate).
 - This runbook is committed and linked from [#47](https://github.com/dvogeldev/remote-dev/issues/47).

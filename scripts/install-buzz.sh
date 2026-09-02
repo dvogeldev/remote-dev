@@ -230,17 +230,110 @@ EOF
 fi
 
 # -----------------------------------------------------------------------------
+# Stage 5b — Detect an existing Postgres dump in pass (recovery story, #51)
+#
+# If `pass buzz/postgres-dumps/` has any *.sql.gpg archives, we transfer the
+# latest one to grr so Stage 6 can replay it into the freshly-provisioned
+# Postgres before the relay boots. Skip cleanly when pass has no archives
+# (genuinely fresh deployment).
+# -----------------------------------------------------------------------------
+remote_dump_path=""
+remote_dump_filename=""
+if command -v pass >/dev/null && pass ls "buzz/postgres-dumps/" >/dev/null 2>&1; then
+  # pass ls output uses box-drawing chars; pull out *.sql filenames.
+  # Filenames are sortable timestamps (YYYYMMDDTHHMMSSZ), so reverse-sort
+  # gives us the latest.
+  latest="$(pass ls "buzz/postgres-dumps/" 2>/dev/null \
+    | grep -oE '[0-9TZ]+\.sql' \
+    | sort -r \
+    | head -n 1)"
+  if [[ -n "$latest" ]]; then
+    echo "  pass has Postgres dump: $latest (will replay)"
+    # `pass show` decrypts the pass tree layer (ADR-0007) and returns
+    # the raw SQL. No further gpg decryption needed.
+    pass show "buzz/postgres-dumps/$latest" > /tmp/buzz-restore.dump
+    scp -q /tmp/buzz-restore.dump "$HOST:/tmp/buzz-restore.dump"
+    rm -f /tmp/buzz-restore.dump
+    remote_dump_path="/tmp/buzz-restore.dump"
+    remote_dump_filename="$latest"
+  fi
+fi
+if [[ -z "$remote_dump_path" ]]; then
+  echo "  no Postgres dumps in pass (fresh deployment, nothing to restore)"
+fi
+
+# -----------------------------------------------------------------------------
 # Stage 6 — compose pull + bring the stack up via the systemd unit
 #
 # buzz.service runs `docker compose up` in the foreground, which keeps the
 # compose process alive under the unit. The unit IS the control plane for
 # the stack: `systemctl --user start|stop|restart buzz.service`.
+#
+# If a Postgres dump was transferred in Stage 5b, we bring up Postgres +
+# minio-init only (so the relay doesn't race us), replay the dump into
+# the empty DB, then start the full stack via the systemd unit. Skip
+# restore cleanly on (a) no dump, or (b) DB already populated.
 # -----------------------------------------------------------------------------
-remote_bash_args <<'EOS'
+remote_bash_args "${remote_dump_path:-}" <<'EOS'
 set -euo pipefail
+dump_path="${1:-}"
 cd "$HOME/.buzz"
 echo "compose pull..."
 docker compose pull --quiet
+
+if [[ -n "$dump_path" ]]; then
+  # Load the backing-service secrets from .env (set -a exports all
+  # variables; we then set +a to keep them out of the global env).
+  set -a; . ./.env; set +a
+
+  echo "bringing up Postgres (for restore)..."
+  # Bring up Postgres only. `--wait` here would also wait for any service
+  # that depends on Postgres (i.e., the relay), which would hang the script
+  # until the relay is healthy — but we're explicitly NOT bringing the
+  # relay up yet because we're about to replay into Postgres. The relay
+  # comes up via the systemd unit below, AFTER the replay succeeds.
+  docker compose up --wait postgres
+
+  # Idempotency: check if the DB already has tables (could happen if the
+  # operator manually restored or a partial install happened). If empty,
+  # replay; if populated, log a warning and skip to avoid clobbering.
+  # Note: `< /dev/null` is critical — `docker compose exec` inherits the
+  # parent's stdin and would otherwise eat the rest of the heredoc.
+  table_count="$(docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
+    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" \
+    < /dev/null || true)"
+  table_count="${table_count:-0}"
+
+  if [[ "$table_count" == "0" ]]; then
+    echo "Postgres DB empty — replaying dump from $dump_path..."
+    # NOTE: bash `cmd < a < b` means "read from b" (last redirect wins), and
+    # `cmd1 | cmd2 < file` makes the `<` win over the pipe. We must use
+    # exactly one of: pipe-only (`cat file | cmd`) OR `<`-only (`cmd < file`).
+    # Pipe-only is simpler here.
+    if ! cat "$dump_path" | docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
+        psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1; then
+      echo "FATAL: dump replay failed (above psql output)" >&2
+      exit 5
+    fi
+    echo "  restore complete; clean up the dump file"
+    rm -f "$dump_path"
+  else
+    echo "WARN: Postgres DB already has $table_count public table(s); skipping restore to avoid clobbering."
+    echo "      If intentional, run manually:"
+    echo "        cat $dump_path | docker compose exec -T -e PGPASSWORD=\"\$POSTGRES_PASSWORD\" postgres \\"
+    echo "          psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -v ON_ERROR_STOP=1 < /dev/null"
+    rm -f "$dump_path"
+  fi
+
+  # Bring up minio-init too so its bucket is ready before the relay
+  # checks S3 access. No `--wait` here either (the relay depends on it).
+  echo "bringing up minio-init..."
+  docker compose up minio-init
+else
+  echo "no dump to restore (fresh deployment)"
+fi
+
 echo "starting buzz.service (this runs docker compose up in the foreground)..."
 systemctl --user enable --now buzz.service
 echo "waiting for relay healthcheck..."
