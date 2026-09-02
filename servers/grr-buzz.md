@@ -260,30 +260,113 @@ Per upstream guidance, before bumping:
 
 ### Rotate the relay keypair
 
-The relay keypair signs relay-level events (deletions, channel meta). It is
-load-bearing but does NOT identify a human or agent; rotate it freely
-without losing data, but past relay-signed events become unverifiable.
+**When**: workspace move (new VPS, new region, fresh install after a deploy
+ends) — never otherwise. The relay identity is per-deployment, not a
+human. Past relay-signed events become unverifiable; that's the point of
+a workspace move.
+
+**On the laptop**:
 
 ```bash
-# on the laptop
-nak key generate                                       # new nsec/npub
-pass insert -m -f buzz/relay/private-key <<<"${new_nsec}
-${new_npub}"
+# 1. Confirm the old key is in pass (so we can record it as "shut down" if needed)
+pass show buzz/relay/private-key
+old_nsec="$(pass show buzz/relay/private-key | head -n1)"
+old_npub="$(pass show buzz/relay/private-key | sed -n '2p')"
+echo "old relay: $old_npub  (shutting down)"
 
-# push the new nsec into ~/.buzz/.env on grr
-HOST=grr ./scripts/install-buzz.sh                     # stages 1-4, then exits at the gate
+# 2. Destroy the old entry — per ADR #0012, the old relay key is deployment-
+#    scoped, not a human identity, so retention serves no audit purpose.
+pass rm -f buzz/relay/private-key
 
-# on grr
+# 3. Generate the new keypair and store it under the SAME pass path
+#    (install-buzz.sh will pick it up on the next run).
+nak key generate                                       # hex secret on stdout
+new_nsec="$(nak key generate)"
+new_npub="$(nak key public "$new_nsec")"
+printf '%s\n%s\n' "$new_nsec" "$new_npub" | pass insert -m -f buzz/relay/private-key >/dev/null
+
+# 4. Push to grr via the install script (stages 1-4) + then the operator
+#    fills RELAY_OWNER_PUBKEY for the new workspace.
+HOST=grr ./scripts/install-buzz.sh
+```
+
+**On grr**: the install script restarts the relay container as part of its
+post-pull stage, picking up the new `BUZZ_RELAY_PRIVATE_KEY`. Postgres is
+**not** restored by the install script — that's the follow-up ticket.
+If you have a `pg_dump` archive in `pass buzz/postgres-dumps/`, manually
+restore it BEFORE the relay first boots:
+
+```bash
+ssh grr
 cd ~/.buzz
-docker compose restart relay                           # picks up the new key
+# Pull the latest dump from pass
+mkdir -p /tmp/restore
+gpg -d ~/.password-store/buzz/postgres-dumps/<date>.sql.gpg 2>/dev/null \
+  | docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
+      psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 ```
 
 ### Rotate Hermes's keypair
 
-Handled by `scripts/unwrap-hermes-env.sh` plus the Hermes restart — see
-ADR #0010. The membership record in `buzz-admin` is keyed by Hermes's
-**pubkey**, so after rotating the nsec the new pubkey needs to be added as a
-member and the old one removed.
+**When**: compromise only (nsec leaked to git, exfiltrated logs, stolen
+device). Never scheduled. The new Hermes npub has no continuity from the
+old one — clients following `npub10jrzt450...` won't auto-follow the
+new key.
+
+**On the laptop**:
+
+```bash
+# 1. Pull the current nsec as the audit record (we'll move it under rotated/)
+old_nsec="$(pass show nostr/hermes-buzz/private-key | head -n1)"
+old_npub="$(pass show nostr/hermes-buzz/private-key | sed -n '2p')"
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+
+# 2. Move the old nsec into pass nostr/hermes-buzz/rotated/<ts> for retention.
+#    Per ADR #0012: events signed by the old key stay valid forever; if anyone
+#    needs to verify a past Hermes event against the old npub, this key is it.
+mkdir -p ~/.password-store/nostr/hermes-buzz/rotated
+pass show nostr/hermes-buzz/private-key \
+  | gpg -e -r "$(pass git config user.email 2>/dev/null || gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $8; exit}')" \
+  > /tmp/hermes-old.gpg
+# Insert into pass as a one-line entry (the whole encrypted blob)
+pass insert -m -f "nostr/hermes-buzz/rotated/$ts" < /tmp/hermes-old.gpg >/dev/null
+rm -f /tmp/hermes-old.gpg
+
+# 3. Generate the new nsec, replace the live pass entry.
+#    Per ADR #0012: Hermes is a Bot in the relay; after rotation, BOTH old and
+#    new Hermes pubkeys stay in the workspace so past events stay visible.
+new_nsec="$(nak key generate)"
+new_npub="$(nak key public "$new_nsec")"
+printf '%s\n%s\n' "$new_nsec" "$new_npub" | pass insert -m -f nostr/hermes-buzz/private-key >/dev/null
+
+# 4. Push to grr via unwrap-hermes-env.sh (writes ~/.hermes/.env + npub/nsec mirror).
+HOST=grr ./scripts/unwrap-hermes-env.sh
+```
+
+**On grr**:
+
+```bash
+# 5. Restart the gateway so the plugin picks up the new nsec.
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+systemctl --user restart hermes-gateway.service
+
+# 6. Register the NEW Hermes pubkey as a Bot (the relay allows BOTH old and
+#    new Hermes per ADR #0012, so don't remove the old entry).
+cd ~/.buzz
+docker compose exec -T relay buzz-admin add-member --pubkey "$new_npub" --role bot < /dev/null
+
+# 7. Update BUZZ_ALLOWED_USERS in ~/.hermes/.env to include the new Hermes npub.
+#    enable-hermes-buzz.sh does this idempotently — re-run it.
+HOST=grr ./scripts/enable-hermes-buzz.sh
+
+# 8. Update hermes-dashboard.service env (Hermes itself uses BUZZ_PRIVATE_KEY,
+#    so the dashboard restart is needed too).
+systemctl --user restart hermes-dashboard.service
+```
+
+**Sanity check**: post an `@new-hermes` mention from the operator and
+verify a reply appears in the channel. If yes, both old and new Hermes
+identities are alive and accepting traffic.
 
 ### Add a second member (human operator or another agent)
 
@@ -299,20 +382,110 @@ Operators should be `admin` or `owner` (matches the same role in
 
 ### Backups
 
-| Artifact | Where | Restore |
-|---|---|---|
-| Relay Nostr keypair | Laptop `pass` + `~/.buzz/.env` on grr | `pass buzz/relay/private-key` → re-run install-buzz.sh stages 1-3 |
-| Postgres data | Docker volume `buzz-postgres-data` | `docker run --rm -v buzz-postgres-data:/from -v $(pwd):/to postgres:17-alpine pg_dump ...` or rely on host-volume backup |
-| MinIO data | Docker volume `buzz-minio-data` | `mc mirror` or host-volume backup |
-| Redis data | Docker volume `buzz-redis-data` | Replay only; ephemeral (AOF) |
-| Git data (NIP-34) | Docker volume `buzz-git-data` | Host-volume backup |
-| Compose file | This repo (`host-plane/buzz-compose.yml`) | `git pull` |
-| `.env.example` template | This repo (`host-plane/buzz/.env.example`) | `git pull` |
+| Artifact | Where | Restore | Cadence |
+|---|---|---|---|
+| **Hermes nsec** | Laptop `pass nostr/hermes-buzz/private-key` (live) + `pass nostr/hermes-buzz/rotated/<ts>` (history per ADR #0012) + mirror at `~/.hermes/.env` and `~/.hermes/nostr.{npub,nsec}` on grr | pass → `unwrap-hermes-env.sh` | Already covered (ADR #0007) |
+| **Relay nsec** | Laptop `pass buzz/relay/private-key` + mirror at `~/.buzz/.env` on grr | pass → `install-buzz.sh` (it re-uses existing pass entries) | Already covered (ADR #0007) |
+| **Postgres data** (events, channels, members, FTS, audit log) | Docker volume `buzz-prod_buzz-postgres-data` | `pg_restore` from a `pass buzz/postgres-dumps/<date>.sql.gpg` archive (see "Postgres backup procedure" below) | **Weekly manual** for v0 (ADR #0012) |
+| **MinIO data** (attachments) | Docker volume `buzz-prod_buzz-minio-data` | `mc mirror` to a fresh volume | Deferred (no real data in v0) |
+| **Redis data** | Docker volume `buzz-prod_buzz-redis-data` | Replay only; ephemeral | N/A |
+| **Git data** (NIP-34) | Docker volume `buzz-prod_buzz-git-data` | Host-volume backup | Deferred (no real data in v0) |
+| **Compose file + unit + scripts** | This repo | `git pull` | On every commit |
+| **`.env.example`** | This repo | `git pull` | On every commit |
 
-The Postgres volume is the largest and the only one that holds real user
-data (events, channels, audit log, FTS). Backup cadence is a separate
-ticket (see map #36's **Not yet specified**: "Backup / disaster recovery
-beyond the keypair").
+The Postgres volume is the only one holding real user data; everything else
+is regenerable from the secret store + this repo.
+
+### Postgres backup procedure (weekly manual)
+
+The operator runs this on grr; the dump ends up in the laptop's `pass`
+tree (encrypted at rest by virtue of being in pass). The operator's
+calendar reminder is the cadence mechanism.
+
+```bash
+# On grr — generate the dump, gpg-encrypt it (recipient = laptop key),
+# then pipe through ssh-agent so pass insert runs on the laptop.
+ssh grr <<'REMOTE'
+set -euo pipefail
+cd ~/.buzz
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+out="/tmp/buzz-postgres-${ts}.sql"
+gpg_recv="$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $8; exit}')"
+docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
+  pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --clean \
+  > "$out"
+ls -la "$out"
+gpg -e -r "$gpg_recv" "$out"
+echo "$out"
+ls -la "${out}.gpg"
+REMOTE
+
+# Pull the .gpg from grr, push into pass, clean up.
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+ssh grr "cat /tmp/buzz-postgres-${ts}.sql.gpg" \
+  | pass insert -m -f "buzz/postgres-dumps/${ts}.sql.gpg"
+ssh grr "rm -f /tmp/buzz-postgres-${ts}.sql /tmp/buzz-postgres-${ts}.sql.gpg"
+
+# Retention: 90 days. Delete older entries:
+for old in $(pass ls buzz/postgres-dumps/ 2>/dev/null \
+              | sed -n 's/.*buzz\/postgres-dumps\/\([0-9TZ]*\)\.sql\.gpg.*/\1/p' \
+              | sort | head -n -12); do
+  pass rm -f "buzz/postgres-dumps/${old}.sql.gpg"
+done
+```
+
+**Restore** (also from grr):
+
+```bash
+ssh grr
+cd ~/.buzz
+# Pick the latest dump; in a real recovery you'd pin to a specific ts.
+dump="$(pass ls buzz/postgres-dumps/ | tail -n 1 | sed 's/.*buzz\/postgres-dumps\///;s/  *//')"
+gpg -d "$HOME/.password-store/buzz/postgres-dumps/${dump}" \
+  | docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
+      psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+```
+
+This procedure is **manual**, not a cron. The install scripts do NOT
+install a Postgres backup cron for v0 — the operator's calendar reminder
+is the cadence mechanism. Revisit when there's a second agent or the
+workspace holds more than ~7 days of irreplaceable activity (per ADR
+#0012 Q9).
+
+### Recover from a fresh VPS
+
+**What works today** (without further follow-up):
+
+- Install scripts (`install-buzz.sh`, `enable-hermes-buzz.sh`) detect
+  existing pass entries and skip regeneration. A rebuilt `grr` keeps
+  the same Hermes nsec and the same relay nsec.
+- After `install-buzz.sh` finishes, the relay boots with the right
+  identity and the right `BUZZ_DOMAIN`. NIP-42 AUTH from Hermes works
+  immediately.
+- `enable-hermes-buzz.sh` reuses the existing `BUZZ_HOME_CHANNEL` /
+  `BUZZ_CHANNELS` if they were populated, so the operator doesn't have
+  to remember the channel UUID.
+
+**What does NOT work today** (gaps that need follow-up):
+
+- **Postgres data is NOT restored.** Rebuilding the host from scratch
+  wipes the Docker volumes, and the install script does not pull a
+  `pg_dump` archive from pass before starting the relay. Until the
+  follow-up lands, the manual restore procedure (see "Restore" above) is
+  required: pick the latest `pass buzz/postgres-dumps/<date>.sql.gpg`
+  archive, decrypt on grr, pipe into `docker compose exec postgres
+  psql`. Events, channels, members, audit log, FTS index all come back
+  from that one archive.
+- **The demo room's `BUZZ_HOME_CHANNEL` / `BUZZ_CHANNELS` must be
+  re-populated** if the operator never persisted them somewhere other
+  than `~/.hermes/.env`. With this runbook in place that's unlikely (the
+  env file IS the source of truth post-install), but the follow-up
+  could surface them in the runbook's day-one checklist more loudly.
+
+The follow-up ticket — "install scripts need 'join existing workspace'
+mode" — covers both gaps. Until it ships, the recovery story requires
+the operator to (1) run the install scripts, (2) manually restore the
+Postgres dump, (3) restart the relay.
 
 ## Files in this repo
 
@@ -321,9 +494,11 @@ beyond the keypair").
 | `host-plane/buzz-compose.yml` | Vendored Compose file (Apache-2.0 from upstream). |
 | `host-plane/buzz/.env.example` | Env template; copy to `~/.buzz/.env` on grr. |
 | `host-plane/buzz.service` | systemd --user unit driving `docker compose up`. |
-| `scripts/install-buzz.sh` | AFK install on grr. Re-run to rotate secrets / push the relay keypair. |
+| `scripts/install-buzz.sh` | AFK install on grr. Re-run to rotate secrets / push the relay keypair. Detects existing `pass buzz/relay/private-key` and reuses it (recovery story, ADR #0012). |
+| `scripts/enable-hermes-buzz.sh` | Installs the real `buzz` CLI from the desktop AppImage; idempotently configures `~/.hermes/.env` (preserves existing `BUZZ_HOME_CHANNEL` / `BUZZ_CHANNELS` / `BUZZ_ALLOWED_USERS` on re-run); runs `hermes gateway install` + start. |
 | `scripts/smoke-buzz.sh` | Three-check smoke test (liveness, NIP-42 from inside the container, round-trip over SSH tunnel). |
-| `docs/adr/0011-buzz-host-plane-layout.md` | This ADR. |
+| `docs/adr/0011-buzz-host-plane-layout.md` | Loopback bind, vendoring policy, system unit shape. |
+| `docs/adr/0012-keypair-rotation-and-backup.md` | Rotation triggers + backup cadence + recovery story for both keypairs. |
 
 ## Out of scope
 
@@ -331,7 +506,10 @@ beyond the keypair").
   app, a public hostname, and a rate-limit strategy). v0 is loopback-only.
 - TLS via the upstream `compose.caddy.yml` override. Operator reaches the
   relay through Tailscale or SSH; no public TLS.
-- Backups beyond the keypair (map #36's **Not yet specified**).
+- **Postgres restoration from `pass` archives during `install-buzz.sh`** —
+  currently the install script preserves the keypair but not the data
+  volumes. Tracked as the "join existing workspace mode" follow-up
+  ticket (parent #36).
 - Multi-relay / multi-community mode. The single-host, single-relay,
   single-community self-host default is the v0 shape per ADR #0011.
 - Production observability (Prometheus + alerting). Metrics are exposed on
@@ -340,7 +518,8 @@ beyond the keypair").
   per research; v0 mitigates by loopback-only bind.
 - Mobile clients, approval-gate workflow plumbing, attachments. Out of v0 per
   the map's Destination clause.
-- A backup/recovery cron for Postgres / MinIO (deferred).
+- An installed Postgres backup cron. v0 uses a calendar reminder + the
+  manual procedure in "Backups" above. Revisit per ADR #0012 Q9.
 
 ## Done means
 
