@@ -254,3 +254,32 @@ echo "Smoke complete. The relay is responsive on the loopback wire (steps 1, 2+3
 echo "and 4). NIP-42 auth-required is wired (step 3). A real Hermes round-trip" \
      "requires buzz-admin add-member for Hermes's pubkey and BUZZ_HOME_CHANNEL/CHANNELS"
 echo "in ~/.hermes/.env — both HITL steps in servers/grr-buzz.md."
+
+# -----------------------------------------------------------------------------
+# Check 5 (optional): public-hostname end-to-end (#53)
+#
+# Probes https://<BUZZ_PUBLIC_HOSTNAME>/ from off-host with NO tunnel / NO SSH.
+# If BUZZ_PUBLIC_HOSTNAME is unset on grr (the v0 loopback default), this check
+# is skipped. If set, an unauthenticated curl is expected to get a CF Access
+# redirect (302 to /cdn-cgi/access/login) — that's the "auth wall is up" gate.
+# After OTP auth (HITL), a follow-up curl should reach the relay's index page.
+# -----------------------------------------------------------------------------
+public_hostname="$(ssh -o IdentitiesOnly=yes -o BatchMode=yes "$HOST" \
+  'grep -E "^BUZZ_PUBLIC_HOSTNAME=[^#]" "$HOME/.buzz/.env" 2>/dev/null | cut -d= -f2-' || true)"
+
+if [[ -n "$public_hostname" ]]; then
+  echo
+  echo "[5/5] public-hostname end-to-end via https://${public_hostname}"
+  # Unauthenticated probe — expect 302 to CF Access login.
+  status="$(curl -sS -o /dev/null -w '%{http_code}' "https://${public_hostname}/" || echo unreachable)"
+  if [[ "$status" == "302" ]]; then
+    echo "  CF Access gate: 302 redirect (auth wall up — public hostname reachable)"
+  elif [[ "$status" == "200" ]]; then
+    echo "  CF Access gate: 200 (Access policy allowing unauthenticated? Verify in dashboard.)"
+  else
+    echo "  CF Access gate: ${status} (expected 302; if 5xx the tunnel is down or Access misconfigured)"
+  fi
+else
+  echo
+  echo "[5/5] public-hostname check skipped (BUZZ_PUBLIC_HOSTNAME unset — v0 loopback mode)"
+fi

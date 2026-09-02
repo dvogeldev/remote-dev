@@ -1,0 +1,16 @@
+[Unit]
+Description=Cloudflare Tunnel (buzz-relay, buzz.dvogeldev.com)
+Documentation=https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/
+Documentation=https://github.com/dvogeldev/remote-dev/blob/main/docs/adr/0013-buzz-public-hostname-via-cloudflare.md
+# Buzz is the relay origin; this tunnel has no purpose without it up.
+After=network.target buzz.service
+Wants=buzz.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cloudflared tunnel --config %h/.cloudflared/buzz-config.yml --no-autoupdate run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -51,11 +51,29 @@ Implications for the operator:
   will be `127.0.0.1:3000` — matches. ✓
 - **Operator via Tailscale** (`ws://grr-remote-dev-01:3000`) sends Host
   `grr-remote-dev-01:3000` — does **not** match `BUZZ_DOMAIN=127.0.0.1`.
-  Two options: (a) add `127.0.0.1 grr-remote-dev-01` to the laptop's
-  `/etc/hosts` so the Tailscale hostname resolves as `127.0.0.1`, or (b)
-  run the relay in multi-community mode (deferred — out of scope for v0).
+  The `127.0.0.1 grr-remote-dev-01` `/etc/hosts` workaround was used during
+  v0; it has been retired in favor of the **public-hostname path** below.
+  For loopback-only mode, run the relay in multi-community mode (deferred)
+  or use the SSH tunnel.
 
-This is the most common day-one papercut. The install script sets `BUZZ_DOMAIN=127.0.0.1` automatically; the smoke test verifies the relay accepts connections with that Host header.
+The install script sets `BUZZ_DOMAIN=127.0.0.1` automatically when
+`BUZZ_PUBLIC_HOSTNAME` is unset; the smoke test verifies the relay accepts
+connections with that Host header.
+
+### Public hostname path (`buzz.dvogeldev.com`, #53)
+
+When `BUZZ_PUBLIC_HOSTNAME` is set in `~/.buzz/.env`, `install-buzz.sh`
+rewrites `BUZZ_DOMAIN`, `RELAY_URL`, `BUZZ_MEDIA_BASE_URL`,
+`BUZZ_MEDIA_SERVER_DOMAIN`, and `BUZZ_CORS_ORIGINS` to use the public
+hostname. The relay then accepts connections with `Host: buzz.dvogeldev.com`
+(which is what `cloudflared` sends through the tunnel). Mobile clients, a
+second operator on a different tailnet, and cross-device workflows all work
+without Tailscale or SSH tunnels.
+
+See `servers/buzz-dvogeldev-access.md` for the full runbook (CF Access app,
+tunnel token issuance, rate-limit rules, smoke-test extension). ADR
+[0013](../docs/adr/0013-buzz-public-hostname-via-cloudflare.md) locks the
+two-tunnel shape and the public-hostname env rewrite.
 
 ## Day-one procedure
 
@@ -504,19 +522,27 @@ Hermes within 7 healthcheck retries.
 | Path | What |
 |---|---|
 | `host-plane/buzz-compose.yml` | Vendored Compose file (Apache-2.0 from upstream). |
-| `host-plane/buzz/.env.example` | Env template; copy to `~/.buzz/.env` on grr. |
+| `host-plane/buzz/.env.example` | Env template; copy to `~/.buzz/.env` on grr. Documents the `BUZZ_PUBLIC_HOSTNAME` opt-in for the public-hostname path (#53). |
 | `host-plane/buzz.service` | systemd --user unit driving `docker compose up`. |
-| `scripts/install-buzz.sh` | AFK install on grr. Re-run to rotate secrets / push the relay keypair. Detects existing `pass buzz/relay/private-key` and reuses it (recovery story, ADR #0012); detects latest Postgres dump in `pass buzz/postgres-dumps/` and restores before bringing the relay up (#51). |
+| `host-plane/cloudflared-buzz.service` | systemd --user unit for the Buzz tunnel (#53). `After=buzz.service` so the relay is up before the tunnel tries to reach it. |
+| `host-plane/cloudflared-buzz-config.yml.example` | Tunnel config template for `buzz.dvogeldev.com` (#53). |
+| `scripts/install-buzz.sh` | AFK install on grr. Re-run to rotate secrets / push the relay keypair. Detects existing `pass buzz/relay/private-key` and reuses it (recovery story, ADR #0012); detects latest Postgres dump in `pass buzz/postgres-dumps/` and restores before bringing the relay up (#51); Stage 4b detects `BUZZ_PUBLIC_HOSTNAME` and rewrites the relay env (#53). |
+| `scripts/install-buzz-cloudflared.sh` | AFK install of the Buzz tunnel unit on grr (#53). Use `--start` after the config is in place. |
 | `scripts/enable-hermes-buzz.sh` | Installs the real `buzz` CLI from the desktop AppImage; idempotently configures `~/.hermes/.env` (preserves existing `BUZZ_HOME_CHANNEL` / `BUZZ_CHANNELS` / `BUZZ_ALLOWED_USERS` on re-run); runs `hermes gateway install` + start. |
-| `scripts/smoke-buzz.sh` | Three-check smoke test (liveness, NIP-42 from inside the container, round-trip over SSH tunnel). |
+| `scripts/smoke-buzz.sh` | Five-check smoke test (liveness, NIP-42 from inside the container, round-trip over SSH tunnel, public-hostname end-to-end via CF Access). The fifth check is opt-in via `BUZZ_PUBLIC_HOSTNAME` (#53). |
 | `scripts/prune-buzz-pg-dumps.sh` | 90-day retention prune for `pass buzz/postgres-dumps/` (#52, ADR #0012 Q9). Integrated into the Postgres backup procedure; idempotent; override `BUZZ_PG_DUMPS_RETENTION_DAYS` to tune. |
 | `docs/adr/0011-buzz-host-plane-layout.md` | Loopback bind, vendoring policy, system unit shape. |
 | `docs/adr/0012-keypair-rotation-and-backup.md` | Rotation triggers + backup cadence + recovery story for both keypairs. |
+| `docs/adr/0013-buzz-public-hostname-via-cloudflare.md` | Locks the two-tunnel shape and the public-hostname env rewrite (#53). |
+| `servers/buzz-dvogeldev-access.md` | Public-hostname runbook: CF Access app, tunnel token issuance, rate-limit rules, smoke-test extension (#53). |
 
 ## Out of scope
 
-- `cloudflared`-fronted exposure of Buzz (would require a second CF Access
-  app, a public hostname, and a rate-limit strategy). v0 is loopback-only.
+- `cloudflared`-fronted exposure of Buzz — implemented in
+  [servers/buzz-dvogeldev-access.md](buzz-dvogeldev-access.md)
+  ([#53](https://github.com/dvogeldev/remote-dev/issues/53)). This runbook
+  covers the loopback-only posture; the public-hostname path is opt-in via
+  `BUZZ_PUBLIC_HOSTNAME` in `~/.buzz/.env`.
 - TLS via the upstream `compose.caddy.yml` override. Operator reaches the
   relay through Tailscale or SSH; no public TLS.
 - Multi-relay / multi-community mode. The single-host, single-relay,
@@ -524,7 +550,8 @@ Hermes within 7 healthcheck retries.
 - Production observability (Prometheus + alerting). Metrics are exposed on
   `127.0.0.1:9102`; wiring them into anything is a follow-up.
 - Anti-spam / rate-limit policy. The relay ships only `AlwaysAllowRateLimiter`
-  per research; v0 mitigates by loopback-only bind.
+  per research; v0 mitigates by loopback-only bind. With the public hostname
+  (see #53), CF-edge rate limits replace the loopback mitigation.
 - Mobile clients, approval-gate workflow plumbing, attachments. Out of v0 per
   the map's Destination clause.
 - An installed Postgres backup cron. v0 uses a calendar reminder + the

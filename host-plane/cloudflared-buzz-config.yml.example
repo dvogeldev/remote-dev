@@ -1,0 +1,22 @@
+# Cloudflare Tunnel config for buzz.dvogeldev.com (#53).
+# Copy to ~/.cloudflared/buzz-config.yml on grr, replace <TUNNEL-UUID>
+# with the value printed by `cloudflared tunnel create buzz-relay`.
+# credentials-file points at the JSON the same command writes.
+#
+# Per ADR #0013, this is a SECOND tunnel — the existing cloudflared.service
+# (hermes-gui tunnel) is unrelated. Each tunnel has its own credentials JSON,
+# its own CF Access app, its own rotation cadence.
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /home/david/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: buzz.dvogeldev.com
+    # Origin is the relay on its loopback HTTP port (matches BUZZ_HTTP_PORT=3000).
+    # No Host rewrite — the relay's host→community resolver matches BUZZ_DOMAIN
+    # against the incoming Host header; rewriting to 127.0.0.1 breaks WS routing
+    # (relay returns 404 no community). BUZZ_DOMAIN is set to buzz.dvogeldev.com
+    # in ~/.buzz/.env when the public-hostname path is enabled (see
+    # scripts/install-buzz.sh, BUZZ_PUBLIC_HOSTNAME).
+    service: http://127.0.0.1:3000
+  - service: http_status:404

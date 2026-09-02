@@ -206,6 +206,70 @@ echo "wrote $target ($(wc -c < "$target") bytes)"
 EOS
 
 # -----------------------------------------------------------------------------
+# Stage 4b — Public-hostname env mode (BUZZ_PUBLIC_HOSTNAME, #53)
+#
+# When BUZZ_PUBLIC_HOSTNAME is set in ~/.buzz/.env (or in the operator's
+# local env when invoking this script), the relay's host→community resolver,
+# media URLs, and CORS origins are rewritten to use the public hostname
+# instead of loopback. This is what makes the relay accept WS connections
+# from cloudflared at https://buzz.dvogeldev.com. See ADR #0013.
+#
+# Idempotent: only writes keys whose current value matches the loopback
+# placeholder OR is unset. If the operator has hand-edited these, leave them.
+# -----------------------------------------------------------------------------
+remote_bash_args <<'EOS'
+set -euo pipefail
+target="$HOME/.buzz/.env"
+
+# BUZZ_PUBLIC_HOSTNAME is the toggle. Read it from the live .env, or from
+# the operator's local environment if they're flipping it for the first run.
+hostname="$(grep -E '^BUZZ_PUBLIC_HOSTNAME=' "$target" 2>/dev/null | cut -d= -f2- || true)"
+hostname="${hostname:-${BUZZ_PUBLIC_HOSTNAME:-}}"
+# Treat empty / placeholder values as unset.
+case "$hostname" in
+  ""|REPLACE_ME*) hostname=""; ;;
+esac
+
+rewrite_if_loopback() {
+  local key="$1" new_value="$2"
+  local current
+  current="$(grep -E "^${key}=" "$target" 2>/dev/null | cut -d= -f2- || true)"
+  # Rewrite only if the current value is a loopback default OR unset.
+  case "$current" in
+    ""|"127.0.0.1"|"127.0.0.1:3000"|"http://127.0.0.1:3000"|"http://127.0.0.1:3000/media"|REPLACE_ME*)
+      tmp="$(mktemp "$target.XXXXXX")"
+      awk -v k="$key" -v v="$new_value" '
+        BEGIN { FS="="; OFS="=" }
+        $1 == k { print k, v; next }
+        { print }
+      ' "$target" > "$tmp"
+      mv "$tmp" "$target"
+      echo "  ${key} -> ${new_value}"
+      ;;
+    *)
+      echo "  ${key}: leaving operator value (${current})"
+      ;;
+  esac
+}
+
+if [[ -n "$hostname" ]]; then
+  wss="wss://${hostname}"
+  https="https://${hostname}"
+  rewrite_if_loopback BUZZ_DOMAIN                  "$hostname"
+  rewrite_if_loopback RELAY_URL                    "$wss"
+  rewrite_if_loopback BUZZ_MEDIA_BASE_URL         "${https}/media"
+  rewrite_if_loopback BUZZ_MEDIA_SERVER_DOMAIN     "$hostname"
+  # CORS for the desktop client + browser-based admin tools.
+  # Default matches the canonical HTTPS origin; operator can add more.
+  rewrite_if_loopback BUZZ_CORS_ORIGINS            "$https"
+  chmod 0600 "$target"
+  echo "public-hostname mode: relay answers at ${wss}"
+else
+  echo "loopback mode (BUZZ_PUBLIC_HOSTNAME unset) — relay answers at ws://127.0.0.1:3000"
+fi
+EOS
+
+# -----------------------------------------------------------------------------
 # Stage 5 — Pre-flight gate on RELAY_OWNER_PUBKEY
 #
 # We refuse to `up -d` until the operator has set their Nostr pubkey — without
