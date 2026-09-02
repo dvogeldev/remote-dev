@@ -386,7 +386,7 @@ Operators should be `admin` or `owner` (matches the same role in
 |---|---|---|---|
 | **Hermes nsec** | Laptop `pass nostr/hermes-buzz/private-key` (live) + `pass nostr/hermes-buzz/rotated/<ts>` (history per ADR #0012) + mirror at `~/.hermes/.env` and `~/.hermes/nostr.{npub,nsec}` on grr | pass → `unwrap-hermes-env.sh` | Already covered (ADR #0007) |
 | **Relay nsec** | Laptop `pass buzz/relay/private-key` + mirror at `~/.buzz/.env` on grr | pass → `install-buzz.sh` (it re-uses existing pass entries) | Already covered (ADR #0007) |
-| **Postgres data** (events, channels, members, FTS, audit log) | Docker volume `buzz-prod_buzz-postgres-data` | `pg_restore` from a `pass buzz/postgres-dumps/<date>.sql.gpg` archive (see "Postgres backup procedure" below) | **Weekly manual** for v0 (ADR #0012) |
+| **Postgres data** (events, channels, members, FTS, audit log) | Docker volume `buzz-prod_buzz-postgres-data` | `pg_restore` from a `pass buzz/postgres-dumps/<date>.sql` archive (see "Postgres backup procedure" below). The procedure also runs `scripts/prune-buzz-pg-dumps.sh` to enforce 90-day retention. | **Weekly manual** for v0 (ADR #0012) |
 | **MinIO data** (attachments) | Docker volume `buzz-prod_buzz-minio-data` | `mc mirror` to a fresh volume | Deferred (no real data in v0) |
 | **Redis data** | Docker volume `buzz-prod_buzz-redis-data` | Replay only; ephemeral | N/A |
 | **Git data** (NIP-34) | Docker volume `buzz-prod_buzz-git-data` | Host-volume backup | Deferred (no real data in v0) |
@@ -421,6 +421,11 @@ ts="$(date -u +%Y%m%dT%H%M%SZ)"
 ssh grr "cat /tmp/buzz-postgres-${ts}.sql" \
   | pass insert -m -f "buzz/postgres-dumps/${ts}.sql"
 ssh grr "rm -f /tmp/buzz-postgres-${ts}.sql"
+
+# Prune old dumps (ADR #0012 Q9: 90-day retention). Idempotent — runs as
+# part of the weekly backup so operators can't forget. Override the
+# retention window via BUZZ_PG_DUMPS_RETENTION_DAYS.
+./scripts/prune-buzz-pg-dumps.sh
 ```
 
 Notes:
@@ -504,6 +509,7 @@ Hermes within 7 healthcheck retries.
 | `scripts/install-buzz.sh` | AFK install on grr. Re-run to rotate secrets / push the relay keypair. Detects existing `pass buzz/relay/private-key` and reuses it (recovery story, ADR #0012); detects latest Postgres dump in `pass buzz/postgres-dumps/` and restores before bringing the relay up (#51). |
 | `scripts/enable-hermes-buzz.sh` | Installs the real `buzz` CLI from the desktop AppImage; idempotently configures `~/.hermes/.env` (preserves existing `BUZZ_HOME_CHANNEL` / `BUZZ_CHANNELS` / `BUZZ_ALLOWED_USERS` on re-run); runs `hermes gateway install` + start. |
 | `scripts/smoke-buzz.sh` | Three-check smoke test (liveness, NIP-42 from inside the container, round-trip over SSH tunnel). |
+| `scripts/prune-buzz-pg-dumps.sh` | 90-day retention prune for `pass buzz/postgres-dumps/` (#52, ADR #0012 Q9). Integrated into the Postgres backup procedure; idempotent; override `BUZZ_PG_DUMPS_RETENTION_DAYS` to tune. |
 | `docs/adr/0011-buzz-host-plane-layout.md` | Loopback bind, vendoring policy, system unit shape. |
 | `docs/adr/0012-keypair-rotation-and-backup.md` | Rotation triggers + backup cadence + recovery story for both keypairs. |
 
@@ -523,6 +529,9 @@ Hermes within 7 healthcheck retries.
   the map's Destination clause.
 - An installed Postgres backup cron. v0 uses a calendar reminder + the
   manual procedure in "Backups" above. Revisit per ADR #0012 Q9.
+- Off-host backup of the laptop `pass` tree itself. ADR-0007 establishes
+  pass as the secret source; backing up pass (which holds everything
+  else) is its own follow-up, separate from #52.
 
 ## Done means
 
