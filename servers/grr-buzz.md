@@ -63,27 +63,67 @@ This is the most common day-one papercut. The install script sets `BUZZ_DOMAIN=1
 
 ```bash
 cd /path/to/remote-dev
-HOST=grr ./scripts/install-buzz.sh
+HOST=grr ./scripts/install-buzz.sh         # Buzz relay on grr
+HOST=grr ./scripts/enable-hermes-buzz.sh   # Hermes gateway → buzz plugin enabled
 ```
 
-This lays down `~/.buzz/{compose.yml,.env.example}`, the systemd user unit
-`~/.config/systemd/user/buzz.service`, enables linger for `david` on grr,
-generates the relay keypair (via `nak key generate`, stores in
-`pass buzz/relay/private-key`), generates backing-service secrets, sets
-`BUZZ_DOMAIN=127.0.0.1` and related URLs, and prompts you to set
-`RELAY_OWNER_PUBKEY` in `~/.buzz/.env` before continuing.
+Two scripts, both laptop-driven via SSH to grr.
 
-If the script stops at the `RELAY_OWNER_PUBKEY` gate:
+**`install-buzz.sh`** lays down `~/.buzz/{compose.yml,.env.example}`, the
+systemd user unit `~/.config/systemd/user/buzz.service`, enables linger
+for `david` on grr, generates the relay keypair (via `nak key generate`,
+stores in `pass buzz/relay/private-key`), generates backing-service
+secrets, sets `BUZZ_DOMAIN=127.0.0.1` and related URLs, and prompts you
+to set `RELAY_OWNER_PUBKEY` in `~/.buzz/.env` before continuing.
+
+**`enable-hermes-buzz.sh`** deploys a small Python shim at
+`~/.local/bin/buzz` (see `host-plane/buzz-shim/buzz`) that satisfies the
+plugin's hard-fail on `buzz` CLI absence — see "Why a buzz shim" below.
+It then writes `BUZZ_RELAY_URL`, `BUZZ_TRANSPORT`, `BUZZ_HOME_CHANNEL`,
+`BUZZ_CHANNELS`, `BUZZ_ALLOWED_USERS`, `BUZZ_CLI_PATH` into
+`~/.hermes/.env` (Hermes's keypair was already there per #46), sets
+`gateway.platforms.buzz.enabled: true` in `~/.hermes/config.yaml`, runs
+`hermes gateway install` to create `hermes-gateway.service`, and starts
+it.
+
+If `install-buzz.sh` stops at the `RELAY_OWNER_PUBKEY` gate:
 
 ```bash
 ssh grr '$EDITOR ~/.buzz/.env'         # set RELAY_OWNER_PUBKEY=<operator-hex>
 HOST=grr ./scripts/install-buzz.sh     # resumes: pull + start unit + healthcheck wait
+HOST=grr ./scripts/enable-hermes-buzz.sh  # then enable Hermes's buzz plugin
 ```
 
-The script ends with the unit active (`systemctl --user is-active
-buzz.service` returns `active`) and all five containers healthy. The
-unit's lifecycle IS the stack's lifecycle: `stop` brings the containers
-down, `start` brings them back up.
+The end state: `buzz.service` AND `hermes-gateway.service` both active,
+`docker compose ps` shows all five containers healthy, and
+`~/.hermes/logs/gateway.log` shows `✓ buzz connected`.
+
+### Why a buzz shim (not `buzz-cli` from source)
+
+The bundled Hermes `buzz` plugin's `connect()` hard-fails if `BUZZ_CLI_PATH`
+(or `buzz` on PATH) is missing — regardless of `BUZZ_TRANSPORT`. The real
+`buzz-cli` is a Rust crate shipped from `block/buzz` (not in the relay
+image; not a standalone GitHub release); building it from source on grr
+requires installing Rust + cloning the repo + ~10 minutes of compile
+time, which is a poor trade for a v0 inbound-only demo.
+
+The shim at `host-plane/buzz-shim/buzz` implements the minimum CLI
+surface the plugin needs (`users get`, `channels list`, `messages get`,
+`dms list`, `version`) with the same JSON contracts as the real
+`buzz-cli`. Inbound via WebSocket works without the real CLI. **Outbound
+sends** (Hermes → Buzz) fail with a JSON error on stderr — for v0
+inbound demo that's fine; for Hermes to reply in #49, the operator
+builds the real CLI:
+
+```bash
+ssh grr
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"
+cargo install --git https://github.com/block/buzz --bin buzz-cli --locked
+install -m 0755 "$HOME/.cargo/bin/buzz-cli" /usr/local/bin/buzz
+rm ~/.local/bin/buzz   # the shim becomes obsolete
+systemctl --user restart hermes-gateway.service
+```
 
 ### Phase 2 — Admin bootstrap (HITL, do these in order on grr)
 
