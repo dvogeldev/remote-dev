@@ -1,0 +1,24 @@
+[Unit]
+Description=Buzz relay (Block Buzz, host-plane v0)
+Documentation=https://github.com/block/buzz/blob/main/deploy/compose/README.md
+# docker compose needs network; we deliberately do NOT depend on
+# hermes-dashboard.service — Buzz should be bringable up independently and
+# Hermes should reconnect when Buzz returns.
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+Environment=COMPOSE_PROJECT_NAME=buzz-prod
+# Compose CLI v2 picks this file when run from ~/.buzz/.
+WorkingDirectory=%h/.buzz
+ExecStart=/usr/bin/docker compose up
+# Stop the stack gracefully on stop/restart so Docker doesn't leave orphaned
+# containers around. `docker compose down` requires no confirmation.
+ExecStop=/usr/bin/docker compose down
+# Don't auto-restart the unit on failure — let the operator decide. The relay
+# container itself has restart: unless-stopped so transient crashes recover.
+Restart=no
+
+[Install]
+WantedBy=default.target
