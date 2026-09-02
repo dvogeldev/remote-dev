@@ -23,7 +23,7 @@ Resolves [#53](https://github.com/dvogeldev/remote-dev/issues/53). Parent: [#36]
 | Session duration | 24h |
 | Auth-required gate | `curl -sI https://buzz.dvogeldev.com/` from a clean laptop must return `HTTP/2 302` redirecting to `/cdn-cgi/access/login` |
 | Tunnel unit name | `cloudflared-buzz.service` (separate from `cloudflared.service` which fronts `hermes.dvogeldev.com`) |
-| Relay env knob | `BUZZ_PUBLIC_HOSTNAME=buzz.dvogeldev.com` in `~/.buzz/.env` (the toggle that flips the relay from loopback to public-hostname mode) |
+| Relay env knob | `BUZZ_PUBLIC_HOSTNAME=buzz.dvogeldev.com` in `~/.buzz/.env` (the toggle that flips the relay's client-facing URLs — media + CORS — from loopback to public hostname; `BUZZ_DOMAIN` + `RELAY_URL` stay loopback) |
 | Edge rate limiting | Cloudflare WAF / Rate Limit rule on `buzz.dvogeldev.com` — per-IP throttle on the WS upgrade + HTTP flood rule on `/`. Implemented in this runbook, Phase 1.6. |
 | Admin / metrics exposure | `127.0.0.1:8080` (`_liveness`, `_readiness`) and `127.0.0.1:9102` (`/metrics`) stay loopback-only. The tunnel only routes the relay's HTTP port (3000), so admin endpoints are unreachable from the public hostname by construction, not by path allowlist. |
 
@@ -112,7 +112,7 @@ ssh grr '$EDITOR ~/.buzz/.env'
 #   BUZZ_PUBLIC_HOSTNAME=buzz.dvogeldev.com
 ```
 
-`scripts/install-buzz.sh` reads this knob and rewrites `BUZZ_DOMAIN`, `RELAY_URL`, `BUZZ_MEDIA_BASE_URL`, `BUZZ_MEDIA_SERVER_DOMAIN`, and `BUZZ_CORS_ORIGINS` to use the public hostname — idempotently, only touching keys whose current value is the loopback placeholder or unset.
+`scripts/install-buzz.sh` reads this knob and rewrites the client-facing URLs (`BUZZ_MEDIA_BASE_URL`, `BUZZ_MEDIA_SERVER_DOMAIN`, `BUZZ_CORS_ORIGINS`) to use the public hostname — idempotently, only touching keys whose current value is the loopback placeholder or unset. `BUZZ_DOMAIN` and `RELAY_URL` are deliberately left loopback (see ADR #0013).
 
 **2.2 Re-run `install-buzz.sh` to apply the env rewrite.**
 
@@ -121,7 +121,7 @@ cd /path/to/remote-dev
 HOST=grr ./scripts/install-buzz.sh
 ```
 
-Stage 4b (added in #53) detects `BUZZ_PUBLIC_HOSTNAME` and rewrites the relay env. Stage 6 then `docker compose pull`s and restarts the relay container so the new env vars take effect. **No Postgres restore is needed** — the toggle is env-only, not data-changing.
+Stage 4b (added in #53) detects `BUZZ_PUBLIC_HOSTNAME` and rewrites the client-facing URLs. Stage 6 then `docker compose pull`s and restarts the relay container so the new env vars take effect. **No Postgres restore is needed** — the toggle is env-only, not data-changing.
 
 **2.3 Install the cloudflared-buzz unit + config on grr.**
 
@@ -145,7 +145,7 @@ ${EDITOR:-nano} ~/.cloudflared/buzz-config.yml
 chmod 0600 ~/.cloudflared/buzz-config.yml
 ```
 
-Leave Host as `buzz.dvogeldev.com`. The relay's host→community resolver is configured (`BUZZ_DOMAIN=buzz.dvogeldev.com` after Step 2.2) to accept that hostname as its own. Rewriting Host to `127.0.0.1` would break WS routing (relay returns `404 no community`).
+Keep the `originRequest.httpHostHeader: 127.0.0.1:3000` from the template. The relay's host→community resolver does an exact Host-header match against `BUZZ_DOMAIN=127.0.0.1` (loopback); cloudflared rewrites the incoming `Host: buzz.dvogeldev.com` back to `127.0.0.1:3000` so the relay matches it. Removing this rewrite returns `404 no community is configured for this host`. Client-facing URLs are unaffected — the relay builds them from `BUZZ_MEDIA_BASE_URL` / `BUZZ_MEDIA_SERVER_DOMAIN`.
 
 **2.5 Start the tunnel.**
 
@@ -171,7 +171,8 @@ ssh grr 'curl -fsS http://127.0.0.1:8080/_liveness'
 # expect: ok
 
 ssh grr 'cd ~/.buzz && docker compose logs --tail=40 relay | grep -i buzz_domain'
-# expect: BUZZ_DOMAIN=buzz.dvogeldev.com in the log line
+# expect: BUZZ_DOMAIN=127.0.0.1 in the log line (loopback is correct; the
+# tunnel rewrites the Host header back to loopback — see ADR #0013)
 ```
 
 **3.2 From your laptop on a non-tailnet network, the public hostname.**
@@ -199,7 +200,7 @@ In the Buzz desktop client's connection settings:
 - **Server URL**: `wss://buzz.dvogeldev.com`
 - **Account**: your Nostr nsec (the operator's, whose pubkey is in `RELAY_OWNER_PUBKEY`)
 
-The client opens a WebSocket → CF Access terminates the HTTP upgrade and challenges for OTP → after OTP, the tunnel proxies the WS to `127.0.0.1:3000` on `grr` → the relay's host→community resolver matches `Host: buzz.dvogeldev.com` against `BUZZ_DOMAIN` → the WS proceeds → NIP-42 AUTH from the desktop client → you're in.
+The client opens a WebSocket → CF Access terminates the HTTP upgrade and challenges for OTP → after OTP, the tunnel proxies the WS to `127.0.0.1:3000` on `grr`, rewriting the Host header back to `127.0.0.1:3000` → the relay's host→community resolver matches it against `BUZZ_DOMAIN=127.0.0.1` → the WS proceeds → NIP-42 AUTH from the desktop client → you're in.
 
 **3.5 Smoke from the laptop.**
 
@@ -244,13 +245,12 @@ ssh grr
 ${EDITOR:-nano} ~/.buzz/.env
 # comment out: BUZZ_PUBLIC_HOSTNAME=buzz.dvogeldev.com
 # restore the loopback defaults (install-buzz.sh will rewrite them on next run):
-#   BUZZ_DOMAIN=127.0.0.1
-#   RELAY_URL=ws://127.0.0.1:3000
 #   BUZZ_MEDIA_BASE_URL=http://127.0.0.1:3000/media
 #   BUZZ_MEDIA_SERVER_DOMAIN=127.0.0.1
 #   BUZZ_CORS_ORIGINS=http://127.0.0.1:3000
+#   (BUZZ_DOMAIN and RELAY_URL are already loopback — leave them)
 HOST=grr /path/to/remote-dev/scripts/install-buzz.sh      # rewrites + restarts relay
-sudo systemctl --user stop cloudflared-buzz.service       # tunnel down, public hostname returns DNS NXDOMAIN/CF 1033
+systemctl --user stop cloudflared-buzz.service            # tunnel down, public hostname returns DNS NXDOMAIN/CF 1033
 ```
 
 Operators can still reach the relay via Tailscale or SSH tunnel — that path is unchanged.
@@ -276,7 +276,8 @@ Operators can still reach the relay via Tailscale or SSH tunnel — that path is
 | `host-plane/cloudflared-buzz.service` | systemd --user unit for the Buzz tunnel. `After=buzz.service` so the relay is up before the tunnel tries to reach it. |
 | `host-plane/cloudflared-buzz-config.yml.example` | Tunnel config template. Replace `<TUNNEL-UUID>`, copy to `~/.cloudflared/buzz-config.yml`. |
 | `scripts/install-buzz-cloudflared.sh` | AFK install of the Buzz tunnel unit on grr. Use `--start` after the config is in place. |
-| `scripts/install-buzz.sh` | Stage 4b detects `BUZZ_PUBLIC_HOSTNAME` and rewrites the relay env; idempotent. |
+| `scripts/install-buzz.sh` | Stage 4b detects `BUZZ_PUBLIC_HOSTNAME` and rewrites the client-facing URLs (media + CORS); idempotent. |
+| `scripts/provision-buzz-access.sh` | Creates the `buzz-dvogeldev` CF Access app via the API, reusing the account-level OTP IdP + `david-ops` policy; ensures the DNS CNAME. |
 | `scripts/smoke-buzz.sh` | Fifth check probes `https://<BUZZ_PUBLIC_HOSTNAME>/` and expects a 302 to CF Access. |
 | `host-plane/buzz/.env.example` | Documents the `BUZZ_PUBLIC_HOSTNAME` opt-in knob. |
 | `docs/adr/0013-buzz-public-hostname-via-cloudflare.md` | Locks the two-tunnel shape and the public-hostname env rewrite. |
@@ -295,7 +296,7 @@ Operators can still reach the relay via Tailscale or SSH tunnel — that path is
 
 - `curl -sI https://buzz.dvogeldev.com/` from a clean laptop returns `HTTP/2 302` to a CF Access URL (the official done gate — proves tunnel + Access app are up).
 - `curl -fsS http://127.0.0.1:8080/_liveness` on `grr` returns `ok` (the canonical relay health check, unchanged from #47).
-- `BUZZ_DOMAIN=buzz.dvogeldev.com` is in `~/.buzz/.env` on `grr` (set by `install-buzz.sh` Stage 4b).
+- `BUZZ_PUBLIC_HOSTNAME=buzz.dvogeldev.com` is in `~/.buzz/.env` on `grr`, and `BUZZ_MEDIA_BASE_URL=https://buzz.dvogeldev.com/media` / `BUZZ_MEDIA_SERVER_DOMAIN=buzz.dvogeldev.com` / `BUZZ_CORS_ORIGINS=https://buzz.dvogeldev.com` are set (by `install-buzz.sh` Stage 4b). `BUZZ_DOMAIN` and `RELAY_URL` stay loopback.
 - A second operator on a different tailnet can sign in to `wss://buzz.dvogeldev.com` via CF Access OTP and reach the same workspace as the primary operator.
 - `scripts/smoke-buzz.sh` runs all five checks cleanly from a non-tailnet laptop.
 - No public port is open on `grr` for 3000 / 8080 / 9102 (only 22/SSH and the tunnel).

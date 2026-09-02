@@ -209,10 +209,19 @@ EOS
 # Stage 4b — Public-hostname env mode (BUZZ_PUBLIC_HOSTNAME, #53)
 #
 # When BUZZ_PUBLIC_HOSTNAME is set in ~/.buzz/.env (or in the operator's
-# local env when invoking this script), the relay's host→community resolver,
-# media URLs, and CORS origins are rewritten to use the public hostname
-# instead of loopback. This is what makes the relay accept WS connections
-# from cloudflared at https://buzz.dvogeldev.com. See ADR #0013.
+# local env when invoking this script), the relay's CLIENT-FACING URLs (media
+# base, media server domain, CORS origins) are rewritten to use the public
+# hostname instead of loopback.
+#
+# Deliberately NOT rewritten (see ADR #0013):
+#   - BUZZ_DOMAIN stays loopback (127.0.0.1). The relay's host→community
+#     resolver does exact Host-header match; cloudflared rewrites the Host
+#     header back to loopback via originRequest.httpHostHeader, so the relay
+#     keeps matching its loopback BUZZ_DOMAIN.
+#   - RELAY_URL stays loopback (ws://127.0.0.1:3000). It must match Hermes's
+#     BUZZ_RELAY_URL — the relay verifies NIP-98 auth against it, and Hermes
+#     signs with the loopback URL. Flipping RELAY_URL to wss:// breaks NIP-98
+#     with "URL mismatch" and the gateway fails to connect.
 #
 # Idempotent: only writes keys whose current value matches the loopback
 # placeholder OR is unset. If the operator has hand-edited these, leave them.
@@ -253,17 +262,14 @@ rewrite_if_loopback() {
 }
 
 if [[ -n "$hostname" ]]; then
-  wss="wss://${hostname}"
   https="https://${hostname}"
-  rewrite_if_loopback BUZZ_DOMAIN                  "$hostname"
-  rewrite_if_loopback RELAY_URL                    "$wss"
   rewrite_if_loopback BUZZ_MEDIA_BASE_URL         "${https}/media"
   rewrite_if_loopback BUZZ_MEDIA_SERVER_DOMAIN     "$hostname"
   # CORS for the desktop client + browser-based admin tools.
   # Default matches the canonical HTTPS origin; operator can add more.
   rewrite_if_loopback BUZZ_CORS_ORIGINS            "$https"
   chmod 0600 "$target"
-  echo "public-hostname mode: relay answers at ${wss}"
+  echo "public-hostname mode: client-facing URLs use ${https} (BUZZ_DOMAIN + RELAY_URL stay loopback per ADR #0013)"
 else
   echo "loopback mode (BUZZ_PUBLIC_HOSTNAME unset) — relay answers at ws://127.0.0.1:3000"
 fi

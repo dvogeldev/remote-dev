@@ -16,13 +16,19 @@ The relay's `BUZZ_HTTP_PORT` continues to bind `127.0.0.1:3000`. The tunnel unit
 
 The public hostname gets CF Access in front (email allowlist + OTP, mirroring `hermes.dvogeldev.com`). Inside, the relay still requires NIP-42 AUTH for every WS message and `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true` for membership gating. These do **not** replace each other: CF Access gates the *TCP connection* (who can open a WebSocket at all); NIP-42 + membership gate the *events* (which Nostr pubkeys the relay accepts messages from). Both layers are necessary; removing either leaves a gap. The relay's `BUZZ_ALLOW_NIP_OA_AUTH=true` is unrelated — that's for NIP-OA (Open Authorization) flows within Nostr, not web auth.
 
-### `BUZZ_DOMAIN` becomes the public hostname
+### `BUZZ_DOMAIN` stays loopback; cloudflared rewrites the Host header
 
-v0 set `BUZZ_DOMAIN=127.0.0.1` so the relay's host→community resolver accepts WS connections with `Host: 127.0.0.1:3000`. Public-hostname mode sets `BUZZ_DOMAIN=buzz.dvogeldev.com` so the resolver accepts connections with `Host: buzz.dvogeldev.com` (which is what `cloudflared` sends after `Host`-rewriting... wait, it does NOT rewrite — see "Why no Host rewrite"). The new `BUZZ_PUBLIC_HOSTNAME` env knob in `~/.buzz/.env` selects which mode the relay runs in: unset → loopback (v0 behavior preserved); set → public hostname. `install-buzz.sh` detects the existing `.env`, leaves operator-tunable values alone, and rewrites the `BUZZ_DOMAIN*` block to match.
+The relay's host→community resolver does an **exact Host-header match** (host:port) against `BUZZ_DOMAIN`, with the relay's `BUZZ_HTTP_PORT` appended when `BUZZ_DOMAIN` carries no port. v0 set `BUZZ_DOMAIN=127.0.0.1`, so the only Host value the relay accepts is `127.0.0.1:3000` (which is exactly what Hermes sends over loopback). Setting `BUZZ_DOMAIN=buzz.dvogeldev.com` does **not** work: the resolver then looks for `buzz.dvogeldev.com:3000` while off-host clients send `Host: buzz.dvogeldev.com` (no port, or `:443`), so every connection gets `404 no community is configured for this host`.
 
-### Why no Host rewrite (and what that means)
+The correct shape is to **keep `BUZZ_DOMAIN=127.0.0.1`** and have `cloudflared` rewrite the Host header back to loopback via `originRequest.httpHostHeader: 127.0.0.1:3000`. Both Hermes (loopback) and off-host clients (rewritten) land on the same single community; the relay never learns about the public hostname, and its v0 configuration is untouched.
 
-Just like `hermes.dvogeldev.com`, `cloudflared` for Buzz does **not** rewrite the `Host` header to `127.0.0.1`. The relay's host→community resolver is configured (`BUZZ_DOMAIN=buzz.dvogeldev.com`) to accept the public hostname as its own. Rewriting would break the WS path: `cloudflared` proxies the WS Upgrade to the origin with the original `Host: buzz.dvogeldev.com`, the relay matches it against `BUZZ_DOMAIN`, and the WS proceeds. CORS (`BUZZ_CORS_ORIGINS`) and the media server (`BUZZ_MEDIA_SERVER_DOMAIN`) follow from this — they all use the public hostname. `BUZZ_MEDIA_BASE_URL=https://buzz.dvogeldev.com/media` so the desktop client constructs attachment URLs that resolve through the tunnel.
+### `RELAY_URL` stays loopback too (NIP-98 coupling)
+
+`RELAY_URL` is **not** a client-facing URL. The relay verifies NIP-98 HTTP auth against it, and Hermes signs its NIP-98 events with `BUZZ_RELAY_URL=ws://127.0.0.1:3000`. Flipping `RELAY_URL` to `wss://buzz.dvogeldev.com` changes the expected auth URL scheme and Hermes fails to connect with `NIP-98 HTTP Auth verification failed: URL mismatch: event has http://127.0.0.1:3000/query, expected https://127.0.0.1:3000/query`. So `RELAY_URL` must stay `ws://127.0.0.1:3000`, in lockstep with Hermes's `BUZZ_RELAY_URL`.
+
+### Only client-facing URLs use the public hostname
+
+The only relay env that flips to the public hostname are the URLs the *client* sees and uses to build requests: `BUZZ_MEDIA_BASE_URL=https://buzz.dvogeldev.com/media`, `BUZZ_MEDIA_SERVER_DOMAIN=buzz.dvogeldev.com`, and `BUZZ_CORS_ORIGINS=https://buzz.dvogeldev.com`. The `BUZZ_PUBLIC_HOSTNAME` knob in `~/.buzz/.env` selects public-hostname mode; `install-buzz.sh` Stage 4b rewrites exactly these three keys (idempotently, only when the current value is a loopback placeholder), and deliberately leaves `BUZZ_DOMAIN` and `RELAY_URL` alone.
 
 ### Edge-path gating: only `/` and `/media/*` are public
 

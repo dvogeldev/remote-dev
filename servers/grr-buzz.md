@@ -63,17 +63,19 @@ connections with that Host header.
 ### Public hostname path (`buzz.dvogeldev.com`, #53)
 
 When `BUZZ_PUBLIC_HOSTNAME` is set in `~/.buzz/.env`, `install-buzz.sh`
-rewrites `BUZZ_DOMAIN`, `RELAY_URL`, `BUZZ_MEDIA_BASE_URL`,
-`BUZZ_MEDIA_SERVER_DOMAIN`, and `BUZZ_CORS_ORIGINS` to use the public
-hostname. The relay then accepts connections with `Host: buzz.dvogeldev.com`
-(which is what `cloudflared` sends through the tunnel). Mobile clients, a
-second operator on a different tailnet, and cross-device workflows all work
-without Tailscale or SSH tunnels.
+Stage 4b rewrites the client-facing URLs (`BUZZ_MEDIA_BASE_URL`,
+`BUZZ_MEDIA_SERVER_DOMAIN`, `BUZZ_CORS_ORIGINS`) to use the public
+hostname. `BUZZ_DOMAIN` and `RELAY_URL` stay loopback — the relay's
+host→community resolver matches `Host: 127.0.0.1:3000`, and `cloudflared`
+rewrites the incoming `Host: buzz.dvogeldev.com` back to that loopback value
+via `originRequest.httpHostHeader`. Mobile clients, a second operator on a
+different tailnet, and cross-device workflows all work without Tailscale or
+SSH tunnels.
 
 See `servers/buzz-dvogeldev-access.md` for the full runbook (CF Access app,
 tunnel token issuance, rate-limit rules, smoke-test extension). ADR
 [0013](../docs/adr/0013-buzz-public-hostname-via-cloudflare.md) locks the
-two-tunnel shape and the public-hostname env rewrite.
+two-tunnel shape and the Host-header rewrite.
 
 ## Day-one procedure
 
@@ -526,7 +528,7 @@ Hermes within 7 healthcheck retries.
 | `host-plane/buzz.service` | systemd --user unit driving `docker compose up`. |
 | `host-plane/cloudflared-buzz.service` | systemd --user unit for the Buzz tunnel (#53). `After=buzz.service` so the relay is up before the tunnel tries to reach it. |
 | `host-plane/cloudflared-buzz-config.yml.example` | Tunnel config template for `buzz.dvogeldev.com` (#53). |
-| `scripts/install-buzz.sh` | AFK install on grr. Re-run to rotate secrets / push the relay keypair. Detects existing `pass buzz/relay/private-key` and reuses it (recovery story, ADR #0012); detects latest Postgres dump in `pass buzz/postgres-dumps/` and restores before bringing the relay up (#51); Stage 4b detects `BUZZ_PUBLIC_HOSTNAME` and rewrites the relay env (#53). |
+| `scripts/install-buzz.sh` | AFK install on grr. Re-run to rotate secrets / push the relay keypair. Detects existing `pass buzz/relay/private-key` and reuses it (recovery story, ADR #0012); detects latest Postgres dump in `pass buzz/postgres-dumps/` and restores before bringing the relay up (#51); Stage 4b detects `BUZZ_PUBLIC_HOSTNAME` and rewrites the client-facing URLs (#53). |
 | `scripts/install-buzz-cloudflared.sh` | AFK install of the Buzz tunnel unit on grr (#53). Use `--start` after the config is in place. |
 | `scripts/enable-hermes-buzz.sh` | Installs the real `buzz` CLI from the desktop AppImage; idempotently configures `~/.hermes/.env` (preserves existing `BUZZ_HOME_CHANNEL` / `BUZZ_CHANNELS` / `BUZZ_ALLOWED_USERS` on re-run); runs `hermes gateway install` + start. |
 | `scripts/smoke-buzz.sh` | Five-check smoke test (liveness, NIP-42 from inside the container, round-trip over SSH tunnel, public-hostname end-to-end via CF Access). The fifth check is opt-in via `BUZZ_PUBLIC_HOSTNAME` (#53). |
