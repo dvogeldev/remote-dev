@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Install hermes-dashboard as a systemd --user service on grr.
-# Per #30: loopback bind (no in-box auth gate), Restart=on-failure,
+# Per #30: loopback bind, Restart=on-failure. Public hostname is declared
+# via HERMES_DASHBOARD_PUBLIC_URL so Chat websocket Origin matches; that
+# engages Hermes basic auth (secrets from ~/.hermes/.env). Cloudflare Access
+# remains the public gate (#35).
 # lingering on, /api/status is the health probe. Does NOT configure
 # the Cloudflare Tunnel (#35 is that ticket). Does NOT install
 # Hermes itself — run install.sh first.

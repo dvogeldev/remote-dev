@@ -1,0 +1,27 @@
+# Cloudflare Tunnel config for buzz.dvogeldev.com (#53).
+# Copy to ~/.cloudflared/buzz-config.yml on grr, replace <TUNNEL-UUID>
+# with the value printed by `cloudflared tunnel create buzz-relay`.
+# credentials-file points at the JSON the same command writes.
+#
+# Per ADR #0013, this is a SECOND tunnel — the existing cloudflared.service
+# (hermes-gui tunnel) is unrelated. Each tunnel has its own credentials JSON,
+# its own CF Access app, its own rotation cadence.
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /home/david/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: buzz.dvogeldev.com
+    # Origin is the relay on its loopback HTTP port (matches BUZZ_HTTP_PORT=3000).
+    service: http://127.0.0.1:3000
+    originRequest:
+      # Rewrite the Host header back to the loopback host:port. The relay's
+      # host→community resolver does exact Host-header match against BUZZ_DOMAIN
+      # (127.0.0.1, loopback); without this rewrite the relay sees
+      # Host: buzz.dvogeldev.com and returns 404 "no community is configured
+      # for this host". Both Hermes (loopback) and off-host clients (rewritten
+      # here) land on the same community. Client-facing URLs (media, CORS) are
+      # built from BUZZ_MEDIA_BASE_URL / BUZZ_MEDIA_SERVER_DOMAIN which point
+      # at the public hostname — this rewrite does not affect them.
+      httpHostHeader: 127.0.0.1:3000
+  - service: http_status:404

@@ -74,6 +74,14 @@ _Avoid_: Hermes-in-Docker (the official image); a generic Docker sandbox as the 
 The laptop `pass` tree (GPG). `~/.hermes/.env` on the VPS is a checkout, not the original.
 _Avoid_: Cloudflare Secrets Store for Hermes; `pass` on the VPS as the daily path
 
+**Hermes Nostr identity**:
+Hermes's Nostr keypair (nsec + npub). Lives in `pass nostr/hermes-buzz/private-key` (laptop, GPG), mirrored to `~/.hermes/.env` and `~/.hermes/nostr.{npub,nsec}` on the VPS. Single v0 keypair — no per-profile keys yet (ADR #0009, ADR #0010). Rotated **only on compromise**; old nsec moves to `pass nostr/hermes-buzz/rotated/<ts>` so past events stay verifiable (ADR #0012). The new pubkey is registered as a Bot in the relay alongside the old one — events signed by the old key remain cryptographically valid forever; the rotation produces a hard fork in identity (clients following the old npub don't auto-follow the new one).
+_Avoid_: scheduled annual rotation; removing the rotated key from the workspace; coupling Hermes's rotation to the operator's identity
+
+**Buzz relay workspace identity**:
+The relay's Nostr keypair (`BUZZ_RELAY_PRIVATE_KEY` in `~/.buzz/.env`). Per-deployment, not per-human — signs relay-emitted events (deletions, channel meta). Lives in `pass buzz/relay/private-key` (laptop). Rotated **only on workspace move** (new VPS, new region); old key destroyed since the deployment itself is going away (ADR #0012). Auto-bootstrapped as the workspace `owner` on first boot via `RELAY_OWNER_PUBKEY` in `.env`.
+_Avoid_: rotating the relay key on schedule; treating it as a human identity; retaining it after a workspace move
+
 ### Knowledge
 
 **Memory provider slot**:

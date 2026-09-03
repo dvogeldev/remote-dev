@@ -55,7 +55,7 @@ flowchart LR
 | Trees | `~/agency/{canon,inbox,artifacts}` and `~/projects/<repo>`. Only **canon** is a git repo | 0003 |
 | Profiles | Role = profile. Day one: only `default` (operator, including coding) | 0005 |
 | Open Brain | Existing Supabase; **MCP read**, not the dock, not MemoryProvider | 0006 |
-| Inference | Kilo Gateway; MiniMax Plus (M2.7 default, M3 vision); Flash auxiliary + fallback | (unchanged) |
+| Inference | Kilo Gateway; MiniMax Plus (M3 reasoning default + vision); DeepSeek V4 Pro for research; MoA council (M3 + M2.7 + V4 Pro); Flash auxiliary + fallback | (unchanged) |
 | Graph | Cognee **later**, as tools over promoted canon — never `memory.provider: cognee` | 0002 |
 
 **Non-goals this phase:** Telegram gateway as the dock, Cognee install, Honcho, Hermes-in-Docker, a generic Docker sandbox for Hermes, model-named profiles (`hermes-m27`, …), `--clone-all`, filling the provider slot “to be safe.”
@@ -211,7 +211,7 @@ Then on the VPS:
 
 ```bash
 hermes config set model.provider kilocode
-hermes config set model.default minimax/minimax-m2.7
+hermes config set model.default minimax/minimax-m3
 ```
 
 `hermes model` works too if you prefer the wizard. Do not paste keys into chat or into the repo.
@@ -220,14 +220,14 @@ hermes config set model.default minimax/minimax-m2.7
 # ~/.hermes/config.yaml
 model:
   provider: kilocode
-  default: minimax/minimax-m2.7
+  default: minimax/minimax-m3
 ```
 
-Confirm slugs via Kilo’s catalog if a name drifts. Smoke: `hermes -m "Reply with exactly: kilo-ok"`.
+Confirm slugs via Kilo’s catalog if a name drifts. Smoke: `hermes -z "Reply with exactly: kilo-ok"`.
 
 ### 6.3 Model plan (inside `default`, not extra profiles)
 
-M2.7 is the daily brain. Plus pays M2.7/M3. Flash is PAYG auxiliary + fallback. **Do not** create `hermes-m27` / `hermes-m3` / `hermes-flash` profiles.
+M3 is the daily reasoning brain (Plus quota, 1M context, native vision). DeepSeek V4 Pro is the deep-research path (Kilo PAYG). MoA is a mixed council, not a single MiniMax M2.7 clone — M2.7 stays as an advisor on the Plus quota. Flash is PAYG auxiliary + fallback. **Do not** create `hermes-m27` / `hermes-m3` / `hermes-flash` profiles.
 
 ```yaml
 auxiliary:
@@ -248,10 +248,43 @@ auxiliary:
     model: minimax/minimax-m3
 
 fallback_model: deepseek/deepseek-v4-flash
+
+moa:
+  default_preset: default
+  presets:
+    default:
+      enabled: true
+      fanout: user_turn
+      reference_models:
+        - provider: kilocode
+          model: minimax/minimax-m2.7
+          reasoning_effort: medium
+        - provider: kilocode
+          model: deepseek/deepseek-v4-pro
+          reasoning_effort: high
+      aggregator:
+        provider: kilocode
+        model: minimax/minimax-m3
+        reasoning_effort: high
+    research:
+      enabled: true
+      fanout: user_turn
+      reference_models:
+        - provider: kilocode
+          model: minimax/minimax-m3
+          reasoning_effort: high
+        - provider: kilocode
+          model: minimax/minimax-m2.7
+          reasoning_effort: medium
+      aggregator:
+        provider: kilocode
+        model: deepseek/deepseek-v4-pro
+        reasoning_effort: high
 ```
 
 - Switch models at **session start**. Mid-session `/model` drops the prompt cache.
-- M2.7 ~200K, text-only. Screenshots → M3 at session start (or a later thin `m3` clone if it must stick).
+- Daily chat: M3. Deep research: `/model deepseek/deepseek-v4-pro` or `/model research --provider moa`. Hard tasks: `/moa` (default council) or `/model default --provider moa` for the rest of the session.
+- M3 covers screenshots in the same session. Do not spin a vision-only profile.
 - Plus 5-hour + weekly windows and 3–4 concurrent agents. Fifth worker → Flash or wait.
 - Do not use Flash as the daily main while Plus is idle.
 
@@ -265,7 +298,7 @@ Built-in files inject once per session. Do not paste Cognee or Open Brain dumps 
 
 Hermes is the desk. The library is a git wiki at `~/agency/canon`. Open Brain is a read-only context resource over MCP. The dock is `~/agency/inbox` files. Tasks are tasks. Built-in memory holds operator rules and paths only. No external MemoryProvider. Roles load shelves, not the warehouse. `terminal.backend` is local; approvals on.
 
-**USER.md:** you remote-attach via Herdr; default model M2.7 on Kilo; Open Brain for extra context; skills for procedures.
+**USER.md:** you remote-attach via Herdr; default model M3 on Kilo (reasoning); DeepSeek V4 Pro for research; MoA council for hard tasks; Open Brain for extra context; skills for procedures.
 
 **MEMORY.md:** paths only (`~/agency`, `~/projects`, `~/.hermes`).
 
@@ -301,7 +334,7 @@ First skill to write: `drain-inbox` (read `~/agency/inbox/`, kill most, stub can
 hermes skills opt-in --sync
 ```
 
-Write skills on M2.7, not Flash.
+Write skills on M3, not Flash.
 
 ---
 
@@ -312,7 +345,7 @@ Paths/key names can drift; `hermes config check` after paste.
 ```yaml
 model:
   provider: kilocode
-  default: minimax/minimax-m2.7
+  default: minimax/minimax-m3
 
 auxiliary:
   compression:
@@ -332,6 +365,38 @@ auxiliary:
     model: minimax/minimax-m3
 
 fallback_model: deepseek/deepseek-v4-flash
+
+moa:
+  default_preset: default
+  presets:
+    default:
+      enabled: true
+      fanout: user_turn
+      reference_models:
+        - provider: kilocode
+          model: minimax/minimax-m2.7
+          reasoning_effort: medium
+        - provider: kilocode
+          model: deepseek/deepseek-v4-pro
+          reasoning_effort: high
+      aggregator:
+        provider: kilocode
+        model: minimax/minimax-m3
+        reasoning_effort: high
+    research:
+      enabled: true
+      fanout: user_turn
+      reference_models:
+        - provider: kilocode
+          model: minimax/minimax-m3
+          reasoning_effort: high
+        - provider: kilocode
+          model: minimax/minimax-m2.7
+          reasoning_effort: medium
+      aggregator:
+        provider: kilocode
+        model: deepseek/deepseek-v4-pro
+        reasoning_effort: high
 
 terminal:
   backend: local
@@ -380,7 +445,7 @@ Updates: `hermes update` (git install). `hermes config check` / `hermes config m
 2. Trees + `git init` on `~/agency/canon`.
 3. Herdr install + systemd linger; prove `herdr --remote`.
 4. `install.sh` → `hermes doctor` → `hermes setup` → `terminal.backend local` → **`hermes memory off`**.
-5. Kilo key; M2.7 default; Flash aux; smoke `kilo-ok`.
+5. Kilo key; M3 default; Flash aux; Pro research + MoA council; smoke `kilo-ok`.
 6. Short SOUL / USER / MEMORY (paths + policy). Prove `/new`.
 7. Open Brain **MCP** on `default` (read). No `hermes memory setup`.
 8. One `drain-inbox` skill when you have files in the inbox. Do not ingest Open Brain wholesale. Do not create role or model profiles yet.
@@ -404,7 +469,7 @@ Updates: `hermes update` (git install). `hermes config check` / `hermes config m
 ## 15. Acceptance (before you call week one done)
 
 1. `hermes doctor` clean. `hermes memory status` shows **no** external provider.
-2. `hermes -m "kilo-ok"` returns from M2.7.
+2. `hermes -z "kilo-ok"` returns from M3.
 3. `pwd` / `ls` from a Hermes terminal call are the **host**, not a sandbox image.
 4. `~/agency/canon` is a git repo; inbox/artifacts are not.
 5. A project container cannot `ls ~/agency`.
@@ -412,12 +477,12 @@ Updates: `hermes update` (git install). `hermes config check` / `hermes config m
 7. `MEMORY.md` still tiny.
 8. Herdr remote-attach survives SSH logout (linger).
 9. Force a MiniMax failure (or fallback) and Flash answers.
-10. New session with M3 describes an image.
+10. Same M3 session describes an image (vision is the default model).
 
 ---
 
 ## 16. Daily operating model
 
-You **remote-attach**. nvim on the host plane; tests/toolchains in project-container panes. Hermes on `default` (M2.7) edits both trees as you, with approvals. Skills load for procedures. Open Brain is queried when a page or method needs extra thought-context. Drain the file inbox on a schedule; promote keepers to canon. Flash compresses and scores approvals. M3 is a **new session** for eyes and oversized context.
+You **remote-attach**. nvim on the host plane; tests/toolchains in project-container panes. Hermes on `default` (M3) edits both trees as you, with approvals. Skills load for procedures. Open Brain is queried when a page or method needs extra thought-context. Drain the file inbox on a schedule; promote keepers to canon. Flash compresses and scores approvals. Deep research is a **new session** on DeepSeek V4 Pro (or `/model research --provider moa`). `/moa` is the mixed council for hard tasks.
 
 That is the stack: **host plane + Herdr + project containers + native Hermes (local shell, empty provider) + Kilo/Plus + file inbox + Open Brain as MCP read.**
