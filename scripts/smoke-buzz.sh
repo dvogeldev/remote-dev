@@ -256,13 +256,15 @@ echo "and 4). NIP-42 auth-required is wired (step 3). A real Hermes round-trip" 
 echo "in ~/.hermes/.env — both HITL steps in servers/grr-buzz.md."
 
 # -----------------------------------------------------------------------------
-# Check 5 (optional): public-hostname end-to-end (#53)
+# Check 5 (optional): public-hostname end-to-end (#53, no-Access)
 #
 # Probes https://<BUZZ_PUBLIC_HOSTNAME>/ from off-host with NO tunnel / NO SSH.
 # If BUZZ_PUBLIC_HOSTNAME is unset on grr (the v0 loopback default), this check
-# is skipped. If set, an unauthenticated curl is expected to get a CF Access
-# redirect (302 to /cdn-cgi/access/login) — that's the "auth wall is up" gate.
-# After OTP auth (HITL), a follow-up curl should reach the relay's index page.
+# is skipped. If set, the relay serves the public hostname directly — no CF
+# Access app exists on this hostname (per the no-Access decision; identity is
+# at the relay via NIP-42 AUTH). Expected: 200 from the relay's HTTP frontend.
+# Any 302 to a `cloudflareaccess.com` URL means the Access app was
+# re-created and must be deleted again.
 # -----------------------------------------------------------------------------
 public_hostname="$(ssh -o IdentitiesOnly=yes -o BatchMode=yes "$HOST" \
   'grep -E "^BUZZ_PUBLIC_HOSTNAME=[^#]" "$HOME/.buzz/.env" 2>/dev/null | cut -d= -f2-' || true)"
@@ -270,14 +272,13 @@ public_hostname="$(ssh -o IdentitiesOnly=yes -o BatchMode=yes "$HOST" \
 if [[ -n "$public_hostname" ]]; then
   echo
   echo "[5/5] public-hostname end-to-end via https://${public_hostname}"
-  # Unauthenticated probe — expect 302 to CF Access login.
   status="$(curl -sS -o /dev/null -w '%{http_code}' "https://${public_hostname}/" || echo unreachable)"
-  if [[ "$status" == "302" ]]; then
-    echo "  CF Access gate: 302 redirect (auth wall up — public hostname reachable)"
-  elif [[ "$status" == "200" ]]; then
-    echo "  CF Access gate: 200 (Access policy allowing unauthenticated? Verify in dashboard.)"
+  if [[ "$status" == "200" ]]; then
+    echo "  tunnel+relay: 200 (public hostname reaches the relay — tunnel up, no Access app intercepting)"
+  elif [[ "$status" == "302" ]]; then
+    echo "  tunnel+relay: 302 (CF Access app was re-created on this hostname — delete it; see servers/buzz-dvogeldev-access.md)"
   else
-    echo "  CF Access gate: ${status} (expected 302; if 5xx the tunnel is down or Access misconfigured)"
+    echo "  tunnel+relay: ${status} (expected 200; if 5xx the tunnel is down or the relay container is unhealthy)"
   fi
 else
   echo

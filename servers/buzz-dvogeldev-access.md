@@ -1,12 +1,12 @@
-# buzz.dvogeldev.com — Cloudflare Tunnel + Access runbook
+# buzz.dvogeldev.com — Cloudflare Tunnel runbook (no Access)
 
 Resolves [#53](https://github.com/dvogeldev/remote-dev/issues/53). Parent: [#36](https://github.com/dvogeldev/remote-dev/issues/36). Locks the AFK parts (this repo) and hands you the HITL parts (Cloudflare dashboard + `grr-remote-dev-01` first-run).
 
 ## What this gives you
 
 - `https://buzz.dvogeldev.com` (and `wss://buzz.dvogeldev.com`) → `http://127.0.0.1:3000` on `grr-remote-dev-01` (loopback Buzz relay, no public port).
-- Cloudflare Access gates the public hostname with the **same OTP + email-allowlist** model `hermes.dvogeldev.com` uses — single-operator identity layer shared across both surfaces.
-- `cloudflared-buzz.service` runs as a second systemd --user unit on the host plane (per ADR #0013 — separate tunnel from the Hermes dashboard tunnel, independent rotation + restart boundaries).
+- **Relay membership is the identity gate.** NIP-42 AUTH at the relay rejects anyone whose pubkey isn't in the member roster (`RELAY_OWNER_PUBKEY` bootstrap + `buzz-admin add-member` for collaborators). No Cloudflare Access app on this hostname — the launcher path stays single-click.
+- `cloudflared-buzz.service` runs as a second systemd --user unit on the host plane (per ADR #0013 — separate tunnel from the Hermes dashboard tunnel, independent rotation + restart boundaries), providing TLS termination and a stable public hostname.
 - `buzz.service` (per [#47](https://github.com/dvogeldev/remote-dev/issues/47)) is the origin. Relay stays loopback-bound (`127.0.0.1:3000`, `127.0.0.1:8080`, `127.0.0.1:9102`); only the tunnel daemon exposes the public hostname.
 - Mobile Buzz clients, second operators on different tailnets, and cross-device operator workflows all work without Tailscale or SSH tunnels.
 
@@ -18,13 +18,11 @@ Resolves [#53](https://github.com/dvogeldev/remote-dev/issues/53). Parent: [#36]
 | Cloudflare zone | `dvogeldev.com` (same zone as `hermes.dvogeldev.com` — confirm once in Phase 1) |
 | Public hostname | `buzz.dvogeldev.com` |
 | Origin | `http://127.0.0.1:3000` (loopback, no TLS) |
-| Identity provider | One-time PIN (same IdP as `hermes-dvogeldev`) |
-| Access policy | Allow `Emails` = `dvogelca@gmail.com`; everyone else blocked. Same allowlist as the Hermes dashboard for v1 single-operator. Split policy the day a second operator joins. |
-| Session duration | 24h |
-| Auth-required gate | `curl -sI https://buzz.dvogeldev.com/` from a clean laptop must return `HTTP/2 302` redirecting to `/cdn-cgi/access/login` |
+| Identity gate | **Relay membership, not CF Access.** The relay rejects non-member pubkeys at NIP-42 AUTH. `RELAY_OWNER_PUBKEY` is the bootstrap member; `buzz-admin add-member --pubkey <hex> --role admin` adds collaborators. No Cloudflare Access application exists on `buzz.dvogeldev.com`. |
+| Auth-required gate | `curl -sI https://buzz.dvogeldev.com/` from a clean laptop must return `HTTP/2 200` (the relay's HTTP frontend). Any 302 to a `cloudflareaccess.com` URL means the Access app was re-created and must be deleted again. |
 | Tunnel unit name | `cloudflared-buzz.service` (separate from `cloudflared.service` which fronts `hermes.dvogeldev.com`) |
 | Relay env knob | `BUZZ_PUBLIC_HOSTNAME=buzz.dvogeldev.com` in `~/.buzz/.env` (the toggle that flips the relay's client-facing URLs — media + CORS — from loopback to public hostname; `BUZZ_DOMAIN` + `RELAY_URL` stay loopback) |
-| Edge rate limiting | Cloudflare WAF / Rate Limit rule on `buzz.dvogeldev.com` — per-IP throttle on the WS upgrade + HTTP flood rule on `/`. Implemented in this runbook, Phase 1.6. |
+| Edge rate limiting | Cloudflare WAF / Rate Limit rule on `buzz.dvogeldev.com` — per-IP throttle on the WS upgrade + HTTP flood rule on `/`. Implemented in this runbook, Phase 1.6. Without CF Access as a backstop, these are the edge-layer defense against anonymous flooding; the relay's NIP-42 membership gate is the per-connection defense. |
 | Admin / metrics exposure | `127.0.0.1:8080` (`_liveness`, `_readiness`) and `127.0.0.1:9102` (`/metrics`) stay loopback-only. The tunnel only routes the relay's HTTP port (3000), so admin endpoints are unreachable from the public hostname by construction, not by path allowlist. |
 
 ADR: [0013-buzz-public-hostname-via-cloudflare.md](../docs/adr/0013-buzz-public-hostname-via-cloudflare.md).
@@ -69,20 +67,9 @@ Do these in the Cloudflare Zero Trust dashboard from your laptop. They're the on
   - Service: `http://127.0.0.1:3000`
 - Save. Cloudflare provisions a CNAME for `buzz.dvogeldev.com` → `<UUID>.cfargotunnel.com` automatically; you don't need to add DNS records by hand.
 
-**1.5 Add the Access self-hosted app.**
+**1.5 Add the rate-limit + WAF rules.**
 
-- Zero Trust → **Access controls** → **Applications** → **Add an application** → **Self-hosted**.
-  - Name: `buzz-dvogeldev`
-  - Domain: `buzz.dvogeldev.com`
-- Next → **Policies** → **Create new policy**:
-  - Policy name: `david-ops` (reuse the name from `hermes-dvogeldev` — different app, same allowlist)
-  - Action: **Allow**
-  - Include: rule type `Emails`, value `dvogelca@gmail.com`
-  - Application policies order: `david-ops` Allow, then an **implicit deny** (default — every Access app denies if no Allow matches).
-- **Session duration**: 24 hours.
-- Save.
-
-**1.6 Add the rate-limit + WAF rules.**
+**Identity is now at the relay, not the edge.** There is no CF Access application on `buzz.dvogeldev.com` — NIP-42 AUTH at the relay is the only auth gate. Because the edge no longer challenges anonymous traffic before the tunnel, the WAF/rate-limit rules below are load-bearing; do not skip them.
 
 The relay ships only `AlwaysAllowRateLimiter` — every connected client gets unlimited event throughput (per research #38). Without a CF-edge throttle, a single misbehaving client can saturate the relay's accept loop. Two rules, applied in this order:
 
@@ -179,38 +166,24 @@ ssh grr 'cd ~/.buzz && docker compose logs --tail=40 relay | grep -i buzz_domain
 
 ```bash
 curl -sI https://buzz.dvogeldev.com/ | head -n 1
-# expect: HTTP/2 302
-
-curl -sI https://buzz.dvogeldev.com/ | grep -i location
-# expect: Location: https://dvogeldev.cloudflareaccess.com/...  (CF Access OTP wall)
+# expect: HTTP/2 200
 ```
 
-`HTTP/2 302` to a Cloudflare Access URL is the official done gate — proves the tunnel is up, the public hostname resolves, and CF Access is gating the path. After OTP sign-in, the same URL serves the relay's HTTP frontend.
+`HTTP/2 200` from the relay's HTTP frontend is the official done gate — proves the tunnel is up, the public hostname resolves, and no CF Access app is intercepting (a 302 to a `cloudflareaccess.com` URL means the Access app was re-created and must be deleted again).
 
-**3.3 Sign in once in a browser.**
+**3.3 Click the Buzz launcher icon on the laptop.**
 
-- Open `https://buzz.dvogeldev.com` on a coffee-shop-wifi laptop (or use a phone on cellular — that's the whole point of the public hostname).
-- CF Access bounces to `/cdn-cgi/access/login`. Enter `dvogelca@gmail.com`; check inbox for the PIN; paste it in.
-- You land on the Buzz desktop's web view (if you used the Buzz desktop AppImage) or — for a pure-browser operator — the relay's index page.
+The desktop entry (`~/.local/share/applications/Buzz.desktop`) launches the AppImage with `BUZZ_RELAY_URL=wss://buzz.dvogeldev.com` set. On first connection, the relay issues a NIP-42 AUTH challenge; the client signs with the operator's nsec (the pubkey in `RELAY_OWNER_PUBKEY`). No browser handoff, no OTP — single click. The tunnel proxies the WS to `127.0.0.1:3000` on `grr`, rewriting the Host header back to `127.0.0.1:3000` so the relay's host→community resolver matches it against `BUZZ_DOMAIN=127.0.0.1`.
 
-**3.4 Connect a Buzz client via `wss://buzz.dvogeldev.com`.**
-
-In the Buzz desktop client's connection settings:
-
-- **Server URL**: `wss://buzz.dvogeldev.com`
-- **Account**: your Nostr nsec (the operator's, whose pubkey is in `RELAY_OWNER_PUBKEY`)
-
-The client opens a WebSocket → CF Access terminates the HTTP upgrade and challenges for OTP → after OTP, the tunnel proxies the WS to `127.0.0.1:3000` on `grr`, rewriting the Host header back to `127.0.0.1:3000` → the relay's host→community resolver matches it against `BUZZ_DOMAIN=127.0.0.1` → the WS proceeds → NIP-42 AUTH from the desktop client → you're in.
-
-**3.5 Smoke from the laptop.**
+**3.4 Smoke from the laptop.**
 
 ```bash
 HOST=grr ./scripts/smoke-buzz.sh
 ```
 
-The fifth check (`[5/5] public-hostname end-to-end`) probes `https://buzz.dvogeldev.com/` and expects a 302 to CF Access login. Steps 1–4 still run as before.
+The fifth check (`[5/5] public-hostname end-to-end`) probes `https://buzz.dvogeldev.com/` and now expects a 200 from the relay (not a 302 to CF Access — the Access app is gone). Steps 1–4 still run as before.
 
-**3.6 Multi-device verification (the v1 reason this exists).**
+**3.5 Multi-device verification (the v1 reason this exists).**
 
 - A second operator on a different Tailscale, signing in with `wss://buzz.dvogeldev.com`, reaches the same workspace as the primary operator.
 - A phone with the Buzz mobile app, pointed at `wss://buzz.dvogeldev.com`, reaches the workspace over cellular (no Tailscale, no SSH).
@@ -220,12 +193,20 @@ The fifth check (`[5/5] public-hostname end-to-end`) probes `https://buzz.dvogel
 
 ### Add a second identity
 
-- Zero Trust → **Access controls** → **Applications** → `buzz-dvogeldev` → **Policies** → `david-ops` → edit → add the email under **Include** → save. Takes effect on next login.
-- The second identity also needs to be a relay member (`docker compose exec relay buzz-admin add-member --pubkey <their-hex> --role admin`).
+Identity is at the relay, not the edge. To onboard a collaborator on a per-project basis:
 
-### Why gmail instead of david@dvogeldev.com
+1. They install the Buzz desktop AppImage (or use the mobile client / a browser).
+2. They set `BUZZ_RELAY_URL=wss://buzz.dvogeldev.com` (or paste the URL into the client's connection settings).
+3. On `grr`, you add their pubkey to the relay's member roster:
 
-The original plan in [#31](https://github.com/dvogeldev/remote-dev/issues/31) was to allowlist `david@dvogeldev.com`. As of first deploy (2026-09-01), email hosting for `dvogeldev.com` isn't delivering Cloudflare Access OTPs to that address — so the allowlist is `dvogelca@gmail.com` (the operator's working alias). Same allowlist logic as `hermes.dvogeldev.com` for v1 single-operator; split policy the day a second operator joins and their allowlist differs. See `servers/hermes-dvogeldev-access.md` "Why gmail" for the broader context.
+   ```bash
+   ssh grr 'cd ~/.buzz && docker compose exec relay buzz-admin add-member \
+     --pubkey <their-hex-or-npub> --role admin'
+   ```
+
+4. They connect with their nsec. The relay issues NIP-42 AUTH and signs them in. No dashboard step, no email allowlist — the relay's member list is the gate.
+
+Remove access later with `docker compose exec relay buzz-admin remove-member --pubkey <their-hex>`.
 
 ### Rotate the tunnel token
 
@@ -262,11 +243,11 @@ Operators can still reach the relay via Tailscale or SSH tunnel — that path is
 ### Restart loops / flaps
 
 - `journalctl --user -u cloudflared-buzz.service -n 200` — `cloudflared` logs to journal; missing/bad config is the usual cause. The "skip start" logic in `install-buzz-cloudflared.sh` keeps the unit down until `~/.cloudflared/buzz-config.yml` has a real tunnel UUID.
-- 302 from CF Access flipping to 200 from off-LAN: the Access app isn't matching, or the policy was deleted. Re-check Zero Trust → Access controls → Applications.
+- 200 from on-LAN flipping to a 302 from a `cloudflareaccess.com` URL from off-LAN means the Access app was re-created. Delete it again (this runbook no longer uses one).
 
 ### Backups
 
-- `~/.cloudflared/buzz-config.yml` and the credentials JSON — back these up (they're in the `~/.cloudflared` tree). The tunnel itself, the Access app, and the rate-limit rules live in Cloudflare and don't need local backup.
+- `~/.cloudflared/buzz-config.yml` and the credentials JSON — back these up (they're in the `~/.cloudflared` tree). The tunnel itself and the rate-limit rules live in Cloudflare and don't need local backup.
 - Re-creating the tunnel is `cloudflared tunnel create buzz-relay` + the same config — both can be rebuilt from this runbook + `host-plane/cloudflared-buzz-config.yml.example`.
 
 ## Files in this repo
@@ -277,8 +258,7 @@ Operators can still reach the relay via Tailscale or SSH tunnel — that path is
 | `host-plane/cloudflared-buzz-config.yml.example` | Tunnel config template. Replace `<TUNNEL-UUID>`, copy to `~/.cloudflared/buzz-config.yml`. |
 | `scripts/install-buzz-cloudflared.sh` | AFK install of the Buzz tunnel unit on grr. Use `--start` after the config is in place. |
 | `scripts/install-buzz.sh` | Stage 4b detects `BUZZ_PUBLIC_HOSTNAME` and rewrites the client-facing URLs (media + CORS); idempotent. |
-| `scripts/provision-buzz-access.sh` | Creates the `buzz-dvogeldev` CF Access app via the API, reusing the account-level OTP IdP + `david-ops` policy; ensures the DNS CNAME. |
-| `scripts/smoke-buzz.sh` | Fifth check probes `https://<BUZZ_PUBLIC_HOSTNAME>/` and expects a 302 to CF Access. |
+| `scripts/smoke-buzz.sh` | Fifth check probes `https://<BUZZ_PUBLIC_HOSTNAME>/` and now expects a 200 from the relay. |
 | `host-plane/buzz/.env.example` | Documents the `BUZZ_PUBLIC_HOSTNAME` opt-in knob. |
 | `docs/adr/0013-buzz-public-hostname-via-cloudflare.md` | Locks the two-tunnel shape and the public-hostname env rewrite. |
 
@@ -286,7 +266,7 @@ Operators can still reach the relay via Tailscale or SSH tunnel — that path is
 
 - `hermes.dvogeldev.com`'s tunnel — separate ticket #35; this ticket deliberately uses a second tunnel rather than widening the first.
 - Running `cloudflared` as a system service — `host-plane/cloudflared-buzz.service` is a systemd --user unit, matching the standing host-plane pattern in `CONTEXT.md`.
-- A second identity — day one is single-operator per [#31](https://github.com/dvogeldev/remote-dev/issues/31). The allowlist widens the day a second operator joins.
+- A second identity — relay membership (`buzz-admin add-member`) is the gate; the Access app is gone, so the email allowlist mechanism no longer applies. Per-project collaborators are added on demand.
 - A NIP-05 verified handle on the relay — deferred; reserved for the day a second operator needs a per-pubkey allowlist visible at the relay layer instead of operator-edited env vars.
 - Production observability for Buzz (Postgres, Redis, MinIO, relay logs) and the Hermes `buzz` plugin (logs, metrics, alerts) — out of scope for this ticket; covered by the map's "Not yet specified" list.
 - Multi-relay / multi-community mode — single-community self-host is the v1 shape per ADR #0011.
@@ -294,10 +274,10 @@ Operators can still reach the relay via Tailscale or SSH tunnel — that path is
 
 ## Done means
 
-- `curl -sI https://buzz.dvogeldev.com/` from a clean laptop returns `HTTP/2 302` to a CF Access URL (the official done gate — proves tunnel + Access app are up).
+- `curl -sI https://buzz.dvogeldev.com/` from a clean laptop returns `HTTP/2 200` from the relay (proves tunnel is up; no Access app is intercepting).
 - `curl -fsS http://127.0.0.1:8080/_liveness` on `grr` returns `ok` (the canonical relay health check, unchanged from #47).
 - `BUZZ_PUBLIC_HOSTNAME=buzz.dvogeldev.com` is in `~/.buzz/.env` on `grr`, and `BUZZ_MEDIA_BASE_URL=https://buzz.dvogeldev.com/media` / `BUZZ_MEDIA_SERVER_DOMAIN=buzz.dvogeldev.com` / `BUZZ_CORS_ORIGINS=https://buzz.dvogeldev.com` are set (by `install-buzz.sh` Stage 4b). `BUZZ_DOMAIN` and `RELAY_URL` stay loopback.
-- A second operator on a different tailnet can sign in to `wss://buzz.dvogeldev.com` via CF Access OTP and reach the same workspace as the primary operator.
+- A second operator added via `buzz-admin add-member --pubkey <hex> --role admin` on `grr` can connect to `wss://buzz.dvogeldev.com` with their nsec and reach the same workspace as the primary operator. No CF Access policy step.
 - `scripts/smoke-buzz.sh` runs all five checks cleanly from a non-tailnet laptop.
 - No public port is open on `grr` for 3000 / 8080 / 9102 (only 22/SSH and the tunnel).
 - This runbook is committed and linked from [#53](https://github.com/dvogeldev/remote-dev/issues/53).
