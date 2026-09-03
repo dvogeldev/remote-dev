@@ -7,7 +7,7 @@ Resolves [#35](https://github.com/dvogeldev/remote-dev/issues/35). Locks the AFK
 - `https://hermes.dvogeldev.com` → `http://127.0.0.1:9119` on `grr-remote-dev-01` (loopback Hermes dashboard, no public port).
 - Cloudflare Access gates it with **email allowlist + one-time PIN** (no IdP).
 - `cloudflared` runs as a systemd --user unit on the host plane (per `CONTEXT.md`).
-- `hermes-dashboard.service` (per [#30](https://github.com/dvogeldev/remote-dev/issues/30)) is the origin; `HERMES_DASHBOARD_PUBLIC_URL` is already inline in its unit.
+- `hermes-dashboard.service` (per [#30](https://github.com/dvogeldev/remote-dev/issues/30)) is the origin. `HERMES_DASHBOARD_PUBLIC_URL=https://hermes.dvogeldev.com` is inline in the unit so Chat's PTY websocket Origin is accepted; Hermes basic auth (from `~/.hermes/.env`) satisfies the fail-closed gate that public_url engages. Cloudflare Access is still the public hostname gate.
 
 ## Decisions locked (do not reopen lightly)
 
@@ -101,7 +101,7 @@ ${EDITOR:-nano} ~/.cloudflared/config.yml
 chmod 0600 ~/.cloudflared/config.yml
 ```
 
-The template config also sets `originRequest.httpHostHeader: 127.0.0.1` on the public-hostname ingress rule. Hermes's DNS-rebinding guard rejects any Host header that isn't the loopback bind or a configured public URL, and Cloudflare's default passthrough of `Host: hermes.dvogeldev.com` fails that check. The rewrite lies to Hermes about its origin so the guard accepts; CF Access (upstream) keeps doing the actual auth — single layer, no Hermes-side creds needed.
+Leave Host as `hermes.dvogeldev.com`. The dashboard unit sets `HERMES_DASHBOARD_PUBLIC_URL=https://hermes.dvogeldev.com`, which adds that hostname to the HTTP Host **and** WebSocket Origin allowlist. Rewriting Host to `127.0.0.1` lets REST through but Chat still sends `Origin: https://hermes.dvogeldev.com` and Hermes refuses the PTY upgrade (`origin_mismatch` → browser WS close 1006). CF Access remains the public gate; Hermes basic auth is the in-process provider the fail-closed gate requires once `public_url` is set. Unwrap `hermes/dashboard/BASIC_AUTH_*` with `scripts/unwrap-hermes-env.sh`.
 
 **2.3 Start the tunnel.**
 
@@ -119,7 +119,7 @@ ssh grr 'systemctl --user enable --now cloudflared.service'
 curl -fsS http://127.0.0.1:9119/api/status | jq .
 ```
 
-Expect version, gateway state, `auth_required: false` (we're loopback), active session count, memory + disk pressure.
+Expect version, gateway state, `auth_required: true` (public_url engages the gate even on loopback), `"basic"` in `auth_providers`, active session count, memory + disk pressure.
 
 **3.2 From your laptop on a non-tailnet network, the public hostname.**
 
@@ -127,17 +127,19 @@ Expect version, gateway state, `auth_required: false` (we're loopback), active s
 curl -sI https://hermes.dvogeldev.com | head -n 1
 # expect: HTTP/2 302
 
-curl -fsS https://hermes.dvogeldev.com/api/status | jq '.auth_required'
+curl -fsS https://hermes.dvogeldev.com/api/status | jq '.auth_required, .auth_providers'
 # expect: true    <-- this is the official done gate
+# and "basic" in auth_providers
 ```
 
-`auth_required: true` is what the Hermes docs require before you sign in. It flips because the request passed through CF Access — the loopback-only Hermes unit reports `auth_required: false` to direct loopback calls, but CF Access rejects before the request reaches Hermes, so what the client sees is "auth is required to proceed".
+`auth_required: true` is what the Hermes docs require before Chat's websocket is allowed. Loopback now reports it too, because `HERMES_DASHBOARD_PUBLIC_URL` is set. CF Access still sits in front; after the OTP you also sign in to Hermes with username `david` (`pass show hermes/dashboard/BASIC_AUTH_PASSWORD`).
 
 **3.3 Sign in once in a browser.**
 
 - Open `https://hermes.dvogeldev.com` on the laptop on coffee-shop wifi.
 - CF Access bounces to `/cdn-cgi/access/login`. Enter your email; check inbox for the PIN; paste it in.
-- You land on the Hermes dashboard with `default` profile selected. Sessions, Skills, MCP, Config, Status — all reachable.
+- Hermes login: username `david`, password from `pass show hermes/dashboard/BASIC_AUTH_PASSWORD`.
+- You land on the Hermes dashboard with `default` profile selected. Sessions, Skills, MCP, Config, Status, and Chat — all reachable. Chat must stay connected (no `origin_mismatch` / WS 1006).
 
 **3.4 Verify mobile** (resolves [#34](https://github.com/dvogeldev/remote-dev/issues/34)).
 

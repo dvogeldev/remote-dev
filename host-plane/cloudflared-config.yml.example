@@ -9,9 +9,9 @@ credentials-file: /home/david/.cloudflared/<TUNNEL-UUID>.json
 ingress:
   - hostname: hermes.dvogeldev.com
     service: http://127.0.0.1:9119
-    originRequest:
-      # Hermes' DNS-rebinding guard requires the Host header to match the
-      # loopback bind. Cloudflare Access handles auth upstream; the dashboard
-      # itself stays open on loopback. See #35.
-      httpHostHeader: 127.0.0.1
+    # Do not rewrite Host. Hermes accepts this hostname via
+    # HERMES_DASHBOARD_PUBLIC_URL / dashboard.public_url, which is also
+    # what the Chat PTY websocket Origin check uses. Rewriting Host to
+    # 127.0.0.1 lets HTTP through but leaves Origin as
+    # https://hermes.dvogeldev.com → origin_mismatch / WS 1006.
   - service: http_status:404

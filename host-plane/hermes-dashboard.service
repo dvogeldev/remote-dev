@@ -6,10 +6,13 @@ After=network.target
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-# HERMES_DASHBOARD_PUBLIC_URL is intentionally NOT set: we bind loopback-only
-# and let CF Access (per #35) handle the public hostname / auth. Setting the
-# public URL on a loopback bind triggers Hermes's fail-closed gate (it can't
-# tell that CF Access is doing the auth) and refuses to start.
+# Browser Origin is https://hermes.dvogeldev.com; without public_url the Chat
+# PTY websocket is refused as origin_mismatch (WS close 1006). Declaring the
+# public URL also engages Hermes' auth gate on a loopback bind — CF Access is
+# still the public gate; basic auth (from ~/.hermes/.env) is the in-process
+# provider Hermes requires. See servers/hermes-dvogeldev-access.md.
+Environment=HERMES_DASHBOARD_PUBLIC_URL=https://hermes.dvogeldev.com
+EnvironmentFile=-%h/.hermes/.env
 ExecStart=%h/.local/bin/hermes dashboard --host 127.0.0.1 --port 9119 --no-open
 Restart=on-failure
 RestartSec=5
