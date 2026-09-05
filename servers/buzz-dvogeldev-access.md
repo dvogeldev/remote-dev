@@ -4,7 +4,7 @@ Resolves [#53](https://github.com/dvogeldev/remote-dev/issues/53). Parent: [#36]
 
 ## What this gives you
 
-- `https://buzz.dvogeldev.com` (and `wss://buzz.dvogeldev.com`) → `http://127.0.0.1:3000` on `grr-remote-dev-01` (loopback Buzz relay, no public port).
+- `https://buzz.dvogeldev.com` (and `wss://buzz.dvogeldev.com`) → `http://127.0.0.1:3000` on `grr-remote-dev-01` (loopback Buzz relay, no public port). `wss://buzz.dvogeldev.com/pair` → `http://127.0.0.1:5000` (`buzz-pair-relay` sidecar; ADR #0014).
 - **Relay membership is the identity gate.** NIP-42 AUTH at the relay rejects anyone whose pubkey isn't in the member roster (`RELAY_OWNER_PUBKEY` bootstrap + `buzz-admin add-member` for collaborators). No Cloudflare Access app on this hostname — the launcher path stays single-click.
 - `cloudflared-buzz.service` runs as a second systemd --user unit on the host plane (per ADR #0013 — separate tunnel from the Hermes dashboard tunnel, independent rotation + restart boundaries), providing TLS termination and a stable public hostname.
 - `buzz.service` (per [#47](https://github.com/dvogeldev/remote-dev/issues/47)) is the origin. Relay stays loopback-bound (`127.0.0.1:3000`, `127.0.0.1:8080`, `127.0.0.1:9102`); only the tunnel daemon exposes the public hostname.

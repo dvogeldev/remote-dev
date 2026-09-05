@@ -5,7 +5,7 @@ Resolves [#47](https://github.com/dvogeldev/remote-dev/issues/47). Parent: [#36]
 ## What this gives you
 
 - A self-hosted Block Buzz relay running as a Docker Compose stack on `grr-remote-dev-01`, bound to `127.0.0.1:3000`. Loopback-only: no public port, no public hostname in v0.
-- Postgres 17, Redis 7, MinIO, and a git-volume behind the relay, all in one Compose project (`buzz-prod`).
+- Postgres 17, Redis 7, MinIO, a git-volume, and a `buzz-pair-relay` sidecar (loopback `:5000`) behind the relay, all in one Compose project (`buzz-prod`).
 - Hermes (the agent) reaches the relay at `ws://127.0.0.1:3000` from the same host — no extra networking required.
 - Operator reaches the Buzz desktop client from the laptop via Tailscale or an SSH tunnel.
 
@@ -13,7 +13,7 @@ Resolves [#47](https://github.com/dvogeldev/remote-dev/issues/47). Parent: [#36]
 
 | | |
 |---|---|
-| Compose artifact | Vendored at `host-plane/buzz-compose.yml` (Apache-2.0 from upstream `block/buzz/deploy/compose/compose.yml`) |
+| Compose artifact | Vendored at `host-plane/buzz-compose.yml` (Apache-2.0 from upstream `block/buzz/deploy/compose/compose.yml`; host-plane adds loopback binds + `pair` sidecar, ADR #0014) |
 | Install location on grr | `~/.buzz/{compose.yml,.env}` |
 | Env file mode | `0600` (laptop push only, never world-readable) |
 | Service unit | `~/.config/systemd/user/buzz.service` (Type=simple, ExecStart=docker compose up). The unit is the control plane: `systemctl --user start|stop|restart buzz.service`. |

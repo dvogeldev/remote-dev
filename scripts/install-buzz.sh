@@ -239,20 +239,24 @@ case "$hostname" in
   ""|REPLACE_ME*) hostname=""; ;;
 esac
 
-rewrite_if_loopback() {
+upsert_if_loopback() {
   local key="$1" new_value="$2"
   local current
   current="$(grep -E "^${key}=" "$target" 2>/dev/null | cut -d= -f2- || true)"
   # Rewrite only if the current value is a loopback default OR unset.
   case "$current" in
-    ""|"127.0.0.1"|"127.0.0.1:3000"|"http://127.0.0.1:3000"|"http://127.0.0.1:3000/media"|REPLACE_ME*)
-      tmp="$(mktemp "$target.XXXXXX")"
-      awk -v k="$key" -v v="$new_value" '
-        BEGIN { FS="="; OFS="=" }
-        $1 == k { print k, v; next }
-        { print }
-      ' "$target" > "$tmp"
-      mv "$tmp" "$target"
+    ""|"127.0.0.1"|"127.0.0.1:3000"|"http://127.0.0.1:3000"|"http://127.0.0.1:3000/media"|"ws://127.0.0.1:5000"|REPLACE_ME*)
+      if grep -qE "^${key}=" "$target" 2>/dev/null; then
+        tmp="$(mktemp "$target.XXXXXX")"
+        awk -v k="$key" -v v="$new_value" '
+          BEGIN { FS="="; OFS="=" }
+          $1 == k { print k, v; next }
+          { print }
+        ' "$target" > "$tmp"
+        mv "$tmp" "$target"
+      else
+        printf '%s=%s\n' "$key" "$new_value" >> "$target"
+      fi
       echo "  ${key} -> ${new_value}"
       ;;
     *)
@@ -263,11 +267,14 @@ rewrite_if_loopback() {
 
 if [[ -n "$hostname" ]]; then
   https="https://${hostname}"
-  rewrite_if_loopback BUZZ_MEDIA_BASE_URL         "${https}/media"
-  rewrite_if_loopback BUZZ_MEDIA_SERVER_DOMAIN     "$hostname"
+  upsert_if_loopback BUZZ_MEDIA_BASE_URL         "${https}/media"
+  upsert_if_loopback BUZZ_MEDIA_SERVER_DOMAIN     "$hostname"
   # CORS for the desktop client + browser-based admin tools.
   # Default matches the canonical HTTPS origin; operator can add more.
-  rewrite_if_loopback BUZZ_CORS_ORIGINS            "$https"
+  upsert_if_loopback BUZZ_CORS_ORIGINS            "$https"
+  # NIP-11 pairing_relay_url — desktop QR uses this instead of the main
+  # relay's missing /pair route. Must be ws:// or wss:// (relay rejects else).
+  upsert_if_loopback BUZZ_PAIRING_RELAY_URL       "wss://${hostname}/pair"
   chmod 0600 "$target"
   echo "public-hostname mode: client-facing URLs use ${https} (BUZZ_DOMAIN + RELAY_URL stay loopback per ADR #0013)"
 else
@@ -405,19 +412,36 @@ else
 fi
 
 echo "starting buzz.service (this runs docker compose up in the foreground)..."
-systemctl --user enable --now buzz.service
+systemctl --user enable buzz.service
+# restart so a compose.yml bump (e.g. pair sidecar) is picked up when the unit was already active
+systemctl --user restart buzz.service
 echo "waiting for relay healthcheck..."
+relay_ok=0
 for i in $(seq 1 60); do
   if docker compose exec -T relay bash -ec \
        'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /_readiness HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3; grep -q "200 OK" <&3'; then
     echo "relay healthy after ${i} attempts"
+    relay_ok=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$relay_ok" -ne 1 ]]; then
+  echo "FATAL: relay did not become healthy within 120s" >&2
+  docker compose logs --tail=80 relay >&2
+  systemctl --user status buzz.service --no-pager >&2 || true
+  exit 4
+fi
+echo "waiting for pair sidecar TCP..."
+for i in $(seq 1 30); do
+  if docker compose exec -T pair bash -ec 'exec 3<>/dev/tcp/127.0.0.1/5000'; then
+    echo "pair sidecar listening after ${i} attempts"
     exit 0
   fi
   sleep 2
 done
-echo "FATAL: relay did not become healthy within 120s" >&2
-docker compose logs --tail=80 relay >&2
-systemctl --user status buzz.service --no-pager >&2 || true
+echo "FATAL: pair sidecar did not bind :5000 within 60s" >&2
+docker compose logs --tail=80 pair >&2
 exit 4
 EOS
 

@@ -24,6 +24,8 @@ The correct shape is to **keep `BUZZ_DOMAIN=127.0.0.1`** and have `cloudflared` 
 
 ### `RELAY_URL` stays loopback too (NIP-98 coupling)
 
+Superseded by [ADR #0015](0015-buzz-public-relay-url-for-nip98.md): public desktop/mobile sign `https://buzz.dvogeldev.com/query`, so `RELAY_URL` is `wss://buzz.dvogeldev.com` and Hermes hairpins the same URL. The loopback-only coupling below is historical (v0 tunnel + Hermes-only).
+
 `RELAY_URL` is **not** a client-facing URL. The relay verifies NIP-98 HTTP auth against it, and Hermes signs its NIP-98 events with `BUZZ_RELAY_URL=ws://127.0.0.1:3000`. Flipping `RELAY_URL` to `wss://buzz.dvogeldev.com` changes the expected auth URL scheme and Hermes fails to connect with `NIP-98 HTTP Auth verification failed: URL mismatch: event has http://127.0.0.1:3000/query, expected https://127.0.0.1:3000/query`. So `RELAY_URL` must stay `ws://127.0.0.1:3000`, in lockstep with Hermes's `BUZZ_RELAY_URL`.
 
 ### Only client-facing URLs use the public hostname
@@ -32,7 +34,7 @@ The only relay env that flips to the public hostname are the URLs the *client* s
 
 ### Edge-path gating: only `/` and `/media/*` are public
 
-The cloudflared ingress for `buzz.dvogeldev.com` routes `service: http://127.0.0.1:3000` for the catch-all. Admin/internal paths (`/metrics`, `/_readiness`) bind to **separate loopback ports** (9102, 8080) that the tunnel never touches — so they're unreachable from the public hostname by construction, not by a path-allowlist. This is stronger than a path-allowlist (a misconfigured `path:` regex can't accidentally expose them) and cheaper to maintain. The only paths that reach the relay through the tunnel are WS upgrades and `/media/*` GETs, both of which the relay's HTTP layer is already designed to serve.
+The cloudflared ingress for `buzz.dvogeldev.com` routes `service: http://127.0.0.1:3000` for the catch-all. Admin/internal paths (`/metrics`, `/_readiness`) bind to **separate loopback ports** (9102, 8080) that the tunnel never touches — so they're unreachable from the public hostname by construction, not by a path-allowlist. This is stronger than a path-allowlist (a misconfigured `path:` regex can't accidentally expose them) and cheaper to maintain. The only paths that reach the **main relay** through the tunnel are WS upgrades and `/media/*` GETs. Device pairing (`/pair*`) is routed to the `buzz-pair-relay` sidecar on loopback `:5000` (ADR #0014); it never hits the community resolver.
 
 ### Rate limiting and abuse live at the CF edge
 

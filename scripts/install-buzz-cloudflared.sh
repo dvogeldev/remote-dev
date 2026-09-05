@@ -68,7 +68,37 @@ EOS
   fi
 }
 
+# Idempotent: insert /pair* → 127.0.0.1:5000 ahead of the catch-all if missing.
+ensure_pair_ingress() {
+  remote_bash <<'EOS'
+set -euo pipefail
+cfg="$HOME/.cloudflared/buzz-config.yml"
+[[ -s "$cfg" ]] || { echo "skip pair ingress: no $cfg"; exit 0; }
+if grep -qE 'path:[[:space:]]*/pair' "$cfg"; then
+  echo "pair ingress already present in $cfg"
+  exit 0
+fi
+python3 - "$cfg" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text()
+needle = "ingress:\n"
+block = """ingress:
+  - hostname: buzz.dvogeldev.com
+    path: /pair.*
+    service: http://127.0.0.1:5000
+"""
+if needle not in text:
+    sys.exit("FATAL: no ingress: key in " + str(p))
+p.write_text(text.replace(needle, block, 1))
+print("inserted /pair* ingress ahead of catch-all")
+PY
+EOS
+}
+
 echo "target=${HOST:-local} unit=$UNIT_SRC"
 copy_unit
 install_unit
+ensure_pair_ingress
 maybe_start "${1:-}"

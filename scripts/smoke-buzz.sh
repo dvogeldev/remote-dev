@@ -280,6 +280,24 @@ if [[ -n "$public_hostname" ]]; then
   else
     echo "  tunnel+relay: ${status} (expected 200; if 5xx the tunnel is down or the relay container is unhealthy)"
   fi
+
+  echo
+  echo "[6/6] pairing sidecar via https://${public_hostname}/pair"
+  pair_status="$(curl -sS -o /tmp/buzz-pair-body -w '%{http_code}' -A 'Mozilla/5.0' "https://${public_hostname}/pair" || echo unreachable)"
+  nip11="$(curl -sS -A 'Mozilla/5.0' -H 'Accept: application/nostr+json' "https://${public_hostname}/" || true)"
+  echo "  GET /pair: ${pair_status} (sidecar speaks WS; plain GET is 400, not 404)"
+  if [[ "$pair_status" == "404" ]]; then
+    echo "  FAIL: /pair still 404 — tunnel path missing or pair container down" >&2
+  elif [[ "$pair_status" == "400" || "$pair_status" == "426" || "$pair_status" == "101" ]]; then
+    echo "  pair origin reachable (non-404)"
+  else
+    echo "  pair origin: unexpected ${pair_status} (probe the pair container on 127.0.0.1:5000)"
+  fi
+  if echo "$nip11" | grep -q 'pairing_relay_url'; then
+    echo "  NIP-11: pairing_relay_url present"
+  else
+    echo "  NIP-11: pairing_relay_url missing (set BUZZ_PAIRING_RELAY_URL and restart relay)"
+  fi
 else
   echo
   echo "[5/5] public-hostname check skipped (BUZZ_PUBLIC_HOSTNAME unset — v0 loopback mode)"
