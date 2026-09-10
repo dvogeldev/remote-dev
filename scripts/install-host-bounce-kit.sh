@@ -165,7 +165,7 @@ echo "--- herdr PATH ---"
 systemctl --user show herdr.service -p Environment
 echo "--- kit ---"
 fail=0
-for c in bat eza fd fish fzf lazygit mise nvim rg yazi zoxide; do
+for c in bat eza fd fish fzf jq lazygit mise nvim rg yazi zoxide; do
   p="$(command -v "$c" || true)"
   case "$p" in
     /home/linuxbrew/.linuxbrew/*) echo "ok $c $p" ;;
