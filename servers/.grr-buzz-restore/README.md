@@ -1,26 +1,26 @@
-# Temporary staging: finish `servers/grr-buzz.md`
+# Finish `servers/grr-buzz.md` (full body)
 
-`servers/grr-buzz.md` on `main` currently ends after **Upgrade the relay image**
-(ops note + day-one + Operating are present). Append parts in order to recover
-the full runbook (Rotate keypairs → Backups → Files → Out of scope → Done means).
-
-Expected full file sha256:
+Canonical full runbook sha256:
 `d61e674344df1c25241516be7cf4be19f5f81c3469542cb1ca36bc857e6a971a`
 
-## One-liner (from repo root after `git pull`)
+## Preferred: decode the gzip payload (one file)
 
 ```bash
-cat servers/grr-buzz.md \
-  servers/.grr-buzz-restore/part-{0,1,2,3,4}.md \
-  > /tmp/grr-buzz-full.md
-sha256sum /tmp/grr-buzz-full.md
-# expect d61e6743… then:
-cp /tmp/grr-buzz-full.md servers/grr-buzz.md
+base64 -d servers/.grr-buzz-restore/grr-buzz.md.gz.b64 | gzip -d > servers/grr-buzz.md
+sha256sum servers/grr-buzz.md   # expect d61e6743…
 rm -rf servers/.grr-buzz-restore
-git add servers/grr-buzz.md && git commit -m "docs(grr-buzz): complete runbook after MCP restore" && git push
+git add -A servers && git commit -m "docs(grr-buzz): restore full runbook from staged gzip" && git push
 ```
 
-Or copy from the Grok box clone: `/workspace/remote-dev/servers/grr-buzz.md`
-(already the full FINAL).
+## Alternate: concat parts onto current partial body
 
-Delete this directory once the single-file runbook matches that hash.
+Current `servers/grr-buzz.md` on main ends after **Upgrade the relay image**
+(ops note is present). Parts `part-0`…`part-4` continue from Rotate keypairs.
+
+```bash
+cat servers/grr-buzz.md servers/.grr-buzz-restore/part-{0,1,2,3,4}.md > /tmp/g.md
+sha256sum /tmp/g.md   # should match d61e6743…
+cp /tmp/g.md servers/grr-buzz.md && rm -rf servers/.grr-buzz-restore
+```
+
+Or copy from Grok box: `/workspace/remote-dev/servers/grr-buzz.md` (already FINAL).
