@@ -45,3 +45,38 @@ gpg -d ~/.password-store/buzz/postgres-dumps/<date>.sql.gpg 2>/dev/null \
   | docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
       psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 ```
+
+### Rotate Hermes's keypair
+
+**When**: compromise only (nsec leaked to git, exfiltrated logs, stolen
+device). Never scheduled. The new Hermes npub has no continuity from the
+old one — clients following `npub10jrzt450...` won't auto-follow the
+new key.
+
+**On the laptop**:
+
+```bash
+# 1. Pull the current nsec as the audit record (we'll move it under rotated/)
+old_nsec="$(pass show nostr/hermes-buzz/private-key | head -n1)"
+old_npub="$(pass show nostr/hermes-buzz/private-key | sed -n '2p')"
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+
+# 2. Move the old nsec into pass nostr/hermes-buzz/rotated/<ts> for retention.
+#    Per ADR #0012: events signed by the old key stay valid forever; if anyone
+#    needs to verify a past Hermes event against the old npub, this key is it.
+mkdir -p ~/.password-store/nostr/hermes-buzz/rotated
+pass show nostr/hermes-buzz/private-key \
+  | gpg -e -r "David Vogel" \
+  > /tmp/hermes-old.gpg
+# Insert into pass as a one-line entry (the whole encrypted blob)
+pass insert -m -f "nostr/hermes-buzz/rotated/$ts" < /tmp/hermes-old.gpg >/dev/null
+rm -f /tmp/hermes-old.gpg
+
+# 3. Generate the new nsec, replace the live pass entry.
+#    Per ADR #0012: Hermes is a Bot in the relay; after rotation, BOTH old and
+#    new Hermes pubkeys stay in the workspace so past events stay visible.
+new_nsec="$(nak key generate)"
+new_npub="$(nak key public "$new_nsec")"
+printf '%s\n%s\n' "$new_nsec" "$new_npub" | pass insert -m -f nostr/hermes-buzz/private-key >/dev/null
+
+# 4. Push to grr via unwrap-hermes-env.sh (writes ~/.hermes/.env + npub/nsec mirror).
