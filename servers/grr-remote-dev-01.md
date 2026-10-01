@@ -58,4 +58,6 @@ Fill CPU/RAM/disk above when known. Community Hermes guidance often cites ~1 GB 
 ## Related
 
 - Domain language: [`CONTEXT.md`](../CONTEXT.md)
+- Current diagram: [`../references/system-diagram.md`](../references/system-diagram.md)
+- Ops checklist: [`../docs/agents/hermes-ops-checklist.md`](../docs/agents/hermes-ops-checklist.md)
 - Archived rejected topology: [`../references/historical/system-diagram-container-first.md`](../references/historical/system-diagram-container-first.md)

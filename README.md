@@ -11,9 +11,9 @@ Skills repo for remote development tooling: devcontainers, dotfiles, and related
 | `scripts/` | Install/provision/smoke scripts (bounce kit, Hermes dashboard, Buzz, cloudflared, relay maintenance) |
 | `servers/` | Per-server notes and specs (e.g. `grr-buzz.md`, `grr-remote-dev-01.md`) |
 | `docs/adr/` | Architecture decision records |
-| `docs/agents/` | Guidance for coding agents: issue tracker, triage labels, domain docs |
+| `docs/agents/` | Guidance for coding agents: issue tracker, triage, domain, hermes-ops-checklist, untrusted-jobs |
 | `research/` | Background research notes (Hermes API surface, Buzz self-host, web clients) |
-| `references/` | Hardware/coding specs; `system-diagram.md` stub; archived rejected topology under `references/historical/` |
+| `references/` | Hardware/coding specs; current `system-diagram.md`; archived rejected topology under `references/historical/` |
 | `skills/` | **First-party in this repo:** `drain-inbox` only. `skills-lock.json` lists external Hermes Skills Hub / pack pins — those trees are **not** vendored here unless installed on the VPS. |
 | `convos/` | Captured conversations / notes |
 
@@ -36,6 +36,8 @@ See `docs/adr/` — notably:
 ## For agents
 
 Issue tracking happens in GitHub Issues; triage uses the five-label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, and `docs/agents/domain.md` before working in this repo.
+
+Operator day-two checks: [`docs/agents/hermes-ops-checklist.md`](docs/agents/hermes-ops-checklist.md). Hermes stays on a **local** terminal backend for trusted work; when to isolate instead: [`docs/agents/untrusted-jobs.md`](docs/agents/untrusted-jobs.md). Current topology: [`references/system-diagram.md`](references/system-diagram.md).
 
 ## Provisioning
 

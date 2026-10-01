@@ -52,4 +52,4 @@ Follow the diagram with prose that names the components and explains flows. Do n
 
 ### Reference example
 
-`references/historical/system-diagram-container-first.md` (archived rejected topology; see also stub `references/system-diagram.md`) and the architecture diagram in `convos/minimax-playbook-hermes.md` §0 are being converted to Mermaid under this rule. When converting an existing ASCII diagram, replace it (do not append alongside) and archive the ASCII version only if it carries information the Mermaid cannot express — almost always it does not.
+`references/system-diagram.md` (current) and `references/historical/system-diagram-container-first.md` (archived rejected) and the architecture diagram in `convos/minimax-playbook-hermes.md` §0 are being converted to Mermaid under this rule. When converting an existing ASCII diagram, replace it (do not append alongside) and archive the ASCII version only if it carries information the Mermaid cannot express — almost always it does not.

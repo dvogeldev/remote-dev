@@ -106,6 +106,6 @@ _Avoid_: session transcript dump; using Cognee as the memory provider slot
 
 ## Diagrams
 
-- Current stack diagram: not drawn yet — trust this file and `docs/adr/`.
+- Current stack Mermaid: `references/system-diagram.md` (host plane, agency, projects, local Hermes, Buzz).
 - Archived rejected container-first Mermaid: `references/historical/system-diagram-container-first.md` (do not implement).
-- Pointer stub: `references/system-diagram.md`.
+- Ops checklist: `docs/agents/hermes-ops-checklist.md`.
