@@ -290,3 +290,296 @@ Per upstream guidance, before bumping:
 - For a `:main` bump, expect new migrations; for a `:sha-<7>` bump on a
   release tag, expect a release-notes-driven change set.
 
+### Rotate the relay keypair
+
+**When**: workspace move (new VPS, new region, fresh install after a deploy
+ends) — never otherwise. The relay identity is per-deployment, not a
+human. Past relay-signed events become unverifiable; that's the point of
+that workspace move.
+
+**On the laptop**:
+
+```bash
+# 1. Confirm the old key is in pass (so we can record it as "shut down" if needed)
+pass show buzz/relay/private-key
+old_nsec="$(pass show buzz/relay/private-key | head -n1)"
+old_npub="$(pass show buzz/relay/private-key | sed -n '2p')"
+echo "old relay: $old_npub  (shutting down)"
+
+# 2. Destroy the old entry — per ADR #0012, the old relay key is deployment-
+#    scoped, not a human identity, so retention serves no audit purpose.
+pass rm -f buzz/relay/private-key
+
+# 3. Generate the new keypair and store it under the SAME pass path
+#    (install-buzz.sh will pick it up on the next run).
+nak key generate                                       # hex secret on stdout
+new_nsec="$(nak key generate)"
+new_npub="$(nak key public "$new_nsec")"
+printf '%s\n%s\n' "$new_nsec" "$new_npub" | pass insert -m -f buzz/relay/private-key >/dev/null
+
+# 4. Push to grr via the install script (stages 1-4) + then the operator
+#    fills RELAY_OWNER_PUBKEY for the new workspace.
+HOST=grr ./scripts/install-buzz.sh
+```
+
+**On grr**: the install script restarts the relay container as part of its
+post-pull stage, picking up the new `BUZZ_RELAY_PRIVATE_KEY`. Postgres is
+**not** restored by the install script — that's the follow-up ticket.
+If you have a `pg_dump` archive in `pass buzz/postgres-dumps/`, manually
+restore it BEFORE the relay first boots:
+
+```bash
+ssh grr
+cd ~/.buzz
+# Pull the latest dump from pass
+mkdir -p /tmp/restore
+gpg -d ~/.password-store/buzz/postgres-dumps/<date>.sql.gpg 2>/dev/null \
+  | docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
+      psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+```
+
+### Rotate Hermes's keypair
+
+**When**: compromise only (nsec leaked to git, exfiltrated logs, stolen
+device). Never scheduled. The new Hermes npub has no continuity from the
+old one — clients following `npub10jrzt450...` won't auto-follow the
+new key.
+
+**On the laptop**:
+
+```bash
+# 1. Pull the current nsec as the audit record (we'll move it under rotated/)
+old_nsec="$(pass show nostr/hermes-buzz/private-key | head -n1)"
+old_npub="$(pass show nostr/hermes-buzz/private-key | sed -n '2p')"
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+
+# 2. Move the old nsec into pass nostr/hermes-buzz/rotated/<ts> for retention.
+#    Per ADR #0012: events signed by the old key stay valid forever; if anyone
+#    needs to verify a past Hermes event against the old npub, this key is it.
+mkdir -p ~/.password-store/nostr/hermes-buzz/rotated
+pass show nostr/hermes-buzz/private-key \
+  | gpg -e -r "David Vogel" \
+  > /tmp/hermes-old.gpg
+# Insert into pass as a one-line entry (the whole encrypted blob)
+pass insert -m -f "nostr/hermes-buzz/rotated/$ts" < /tmp/hermes-old.gpg >/dev/null
+rm -f /tmp/hermes-old.gpg
+
+# 3. Generate the new nsec, replace the live pass entry.
+#    Per ADR #0012: Hermes is a Bot in the relay; after rotation, BOTH old and
+#    new Hermes pubkeys stay in the workspace so past events stay visible.
+new_nsec="$(nak key generate)"
+new_npub="$(nak key public "$new_nsec")"
+printf '%s\n%s\n' "$new_nsec" "$new_npub" | pass insert -m -f nostr/hermes-buzz/private-key >/dev/null
+
+# 4. Push to grr via unwrap-hermes-env.sh (writes ~/.hermes/.env + npub/nsec mirror).
+HOST=grr ./scripts/unwrap-hermes-env.sh
+```
+
+**On grr**:
+
+```bash
+# 5. Restart the gateway so the plugin picks up the new nsec.
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+systemctl --user restart hermes-gateway.service
+
+# 6. Register the NEW Hermes pubkey as a Bot (the relay allows BOTH old and
+#    new Hermes per ADR #0012, so don't remove the old entry).
+cd ~/.buzz
+docker compose exec -T relay buzz-admin add-member --pubkey "$new_npub" --role bot < /dev/null
+
+# 7. Update BUZZ_ALLOWED_USERS in ~/.hermes/.env to include the new Hermes npub.
+#    enable-hermes-buzz.sh does this idempotently — re-run it.
+HOST=grr ./scripts/enable-hermes-buzz.sh
+
+# 8. Update hermes-dashboard.service env (Hermes itself uses BUZZ_PRIVATE_KEY,
+#    so the dashboard restart is needed too).
+systemctl --user restart hermes-dashboard.service
+```
+
+**Sanity check**: post an `@new-hermes` mention from the operator and
+verify a reply appears in the channel. If yes, both old and new Hermes
+identities are alive and accepting traffic.
+
+### Add a second member (human operator or another agent)
+
+```bash
+ssh grr
+cd ~/.buzz
+docker compose exec relay buzz-admin add-member \
+    --pubkey <their-hex-pubkey> --role <admin|member|guest|bot>
+```
+
+Operators should be `admin` or `owner` (matches the same role in
+`RELAY_OWNER_PUBKEY`). Other agents are `bot`.
+
+### Backups
+
+| Artifact | Where | Restore | Cadence |
+|---|---|---|---|
+| **Hermes nsec** | Laptop `pass nostr/hermes-buzz/private-key` (live) + `pass nostr/hermes-buzz/rotated/<ts>` (history per ADR #0012) + mirror at `~/.hermes/.env` and `~/.hermes/nostr.{npub,nsec}` on grr | pass → `unwrap-hermes-env.sh` | Already covered (ADR #0007) |
+| **Relay nsec** | Laptop `pass buzz/relay/private-key` + mirror at `~/.buzz/.env` on grr | pass → `install-buzz.sh` (it re-uses existing pass entries) | Already covered (ADR #0007) |
+| **Postgres data** (events, channels, members, FTS, audit log) | Docker volume `buzz-prod_buzz-postgres-data` | `pg_restore` from a `pass buzz/postgres-dumps/<date>.sql` archive (see "Postgres backup procedure" below). The procedure also runs `scripts/prune-buzz-pg-dumps.sh` to enforce 90-day retention. | **Weekly manual** for v0 (ADR #0012) |
+| **MinIO data** (attachments) | Docker volume `buzz-prod_buzz-minio-data` | `mc mirror` to a fresh volume | Deferred (no real data in v0) |
+| **Redis data** | Docker volume `buzz-prod_buzz-redis-data` | Replay only; ephemeral | N/A |
+| **Git data** (NIP-34) | Docker volume `buzz-prod_buzz-git-data` | Host-volume backup | Deferred (no real data in v0) |
+| **Compose file + unit + scripts** | This repo | `git pull` | On every commit |
+| **`.env.example`** | This repo | `git pull` | On every commit |
+
+The Postgres volume is the only one holding real user data; everything else
+is regenerable from the secret store + this repo.
+
+### Postgres backup procedure (weekly manual)
+
+The operator runs this on grr; the dump ends up in the laptop's `pass`
+tree (encrypted at rest by virtue of being in pass). The operator's
+calendar reminder is the cadence mechanism.
+
+```bash
+# On grr — generate the dump, then pipe through ssh-agent so pass insert
+# (which encrypts the entry with the operator's GPG key) runs on the laptop.
+# pass IS the encryption (ADR-0007); we do NOT pre-encrypt with gpg here.
+ssh grr <<'REMOTE'
+set -euo pipefail
+cd ~/.buzz
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
+  pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --clean --if-exists \
+  > "/tmp/buzz-postgres-${ts}.sql"
+ls -la "/tmp/buzz-postgres-${ts}.sql"
+REMOTE
+
+# Pull the dump from grr, push into pass (pass-encrypts it), clean up.
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+ssh grr "cat /tmp/buzz-postgres-${ts}.sql" \
+  | pass insert -m -f "buzz/postgres-dumps/${ts}.sql"
+ssh grr "rm -f /tmp/buzz-postgres-${ts}.sql"
+
+# Prune old dumps (ADR #0012 Q9: 90-day retention). Idempotent — runs as
+# part of the weekly backup so operators can't forget. Override the
+# retention window via BUZZ_PG_DUMPS_RETENTION_DAYS.
+./scripts/prune-buzz-pg-dumps.sh
+```
+
+Notes:
+- `--clean --if-exists` (pg_dump 17) makes the dump replayable into an
+  empty DB after a fresh install — without `--if-exists`, the DROP
+  statements fail on tables that don't yet exist.
+- We do NOT `gpg -e` the dump before `pass insert`. pass already encrypts
+  with the operator's GPG key (ADR-0007); double-encryption makes
+  restore a two-stage process that install-buzz.sh can't run unattended.
+- The `.sql` extension (not `.sql.gpg`) reflects that the on-disk file in
+  pass is the SQL plaintext; pass handles the encryption envelope.
+
+**Restore** (also from grr):
+
+```bash
+ssh grr
+cd ~/.buzz
+# Pick the latest dump; in a real recovery you'd pin to a specific ts.
+dump="$(pass ls buzz/postgres-dumps/ | tail -n 1 | sed 's/.*buzz\/postgres-dumps\///;s/  *//')"
+cat "$HOME/.password-store/buzz/postgres-dumps/${dump}" \
+  | docker compose exec -T -e PGPASSWORD="$POSTGRES_PASSWORD" postgres \
+      psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+```
+
+Or just re-run `install-buzz.sh` — it detects the latest dump in pass,
+restores automatically before bringing the relay up. See "Recover from a
+fresh VPS" below.
+
+This procedure is **manual**, not a cron. The install scripts do NOT
+install a Postgres backup cron for v0 — the operator's calendar reminder
+is the cadence mechanism. Revisit when there's a second agent or the
+workspace holds more than ~7 days of irreplaceable activity (per ADR
+#0012 Q9).
+
+### Recover from a fresh VPS
+
+A rebuilt `grr` with `pass` intact can be restored to a working
+round-trip state with a single command from the laptop:
+
+```bash
+HOST=grr ./scripts/install-buzz.sh
+```
+
+That's the whole story. The script:
+
+1. Detects the existing relay keypair in `pass buzz/relay/private-key` and reuses it (ADR #0012, recovery of the relay identity).
+2. Detects the latest Postgres dump in `pass buzz/postgres-dumps/<date>.sql` and restores it into the freshly-provisioned Postgres before the relay boots.
+3. Brings up the full stack via the systemd unit (`buzz.service`).
+4. NIP-42 AUTH from Hermes works immediately because Hermes's nsec was also preserved (mirrored to `~/.hermes/.env` via `unwrap-hermes-env.sh`).
+
+After the install, run `enable-hermes-buzz.sh` once to (re)wire the
+plugin (idempotent — preserves existing `BUZZ_HOME_CHANNEL` /
+`CHANNELS` / `ALLOWED_USERS`). No manual Postgres restore required.
+
+**What's still manual**:
+
+- The very first install on a brand-new `grr` (no `pass`, no volumes)
+  is a chicken-and-egg: there's no dump to restore, no relay keypair to
+  reuse. That path goes through Phase 1 + Phase 2 of the day-one
+  procedure (operator creates the demo room, registers Hermes via
+  `buzz-admin add-member`, etc.).
+- An operator who runs `install-buzz.sh` mid-incident against a stack
+  with live data (DB has tables, dump is older than the live state) will
+  see the WARN message: the install refuses to overwrite and prompts for
+  a manual `cat $dump | psql` replay.
+
+**Verified end-to-end** (commit `cb30e39` follow-up): a
+`docker compose down -v` wipe followed by `install-buzz.sh` brought
+back the channel `085ef6ac-a52f-465d-b9bd-5f0c5d22594d` ("Hermes
+Demo"), its 1 operator message, and the 2 relay members. The relay
+container booted on the restored data and accepted NIP-42 AUTH from
+Hermes within 7 healthcheck retries.
+
+## Files in this repo
+
+| Path | What |
+|---|---|
+| `host-plane/buzz-compose.yml` | Vendored Compose file (Apache-2.0 from upstream). |
+| `host-plane/buzz/.env.example` | Env template; copy to `~/.buzz/.env` on grr. Documents the `BUZZ_PUBLIC_HOSTNAME` opt-in for the public-hostname path (#53). |
+| `host-plane/buzz.service` | systemd --user unit driving `docker compose up`. |
+| `host-plane/cloudflared-buzz.service` | systemd --user unit for the Buzz tunnel (#53). `After=buzz.service` so the relay is up before the tunnel tries to reach it. |
+| `host-plane/cloudflared-buzz-config.yml.example` | Tunnel config template for `buzz.dvogeldev.com` (#53). |
+| `scripts/install-buzz.sh` | AFK install on grr. Re-run to rotate secrets / push the relay keypair. Detects existing `pass buzz/relay/private-key` and reuses it (recovery story, ADR #0012); detects latest Postgres dump in `pass buzz/postgres-dumps/` and restores before bringing the relay up (#51); Stage 4b detects `BUZZ_PUBLIC_HOSTNAME` and rewrites the client-facing URLs (#53). |
+| `scripts/install-buzz-cloudflared.sh` | AFK install of the Buzz tunnel unit on grr (#53). Use `--start` after the config is in place. |
+| `scripts/enable-hermes-buzz.sh` | Installs the real `buzz` CLI from the desktop AppImage; idempotently configures `~/.hermes/.env` (preserves existing `BUZZ_HOME_CHANNEL` / `BUZZ_CHANNELS` / `BUZZ_ALLOWED_USERS` on re-run); runs `hermes gateway install` + start. |
+| `scripts/smoke-buzz.sh` | Five-check smoke test (liveness, NIP-42 from inside the container, round-trip over SSH tunnel, public-hostname end-to-end via CF Access). The fifth check is opt-in via `BUZZ_PUBLIC_HOSTNAME` (#53). |
+| `scripts/prune-buzz-pg-dumps.sh` | 90-day retention prune for `pass buzz/postgres-dumps/` (#52, ADR #0012 Q9). Integrated into the Postgres backup procedure; idempotent; override `BUZZ_PG_DUMPS_RETENTION_DAYS` to tune. |
+| `docs/adr/0011-buzz-host-plane-layout.md` | Loopback bind, vendoring policy, system unit shape. |
+| `docs/adr/0012-keypair-rotation-and-backup.md` | Rotation triggers + backup cadence + recovery story for both keypairs. |
+| `docs/adr/0013-buzz-public-hostname-via-cloudflare.md` | Locks the two-tunnel shape and the public-hostname env rewrite (#53). |
+| `servers/buzz-dvogeldev-access.md` | Public-hostname runbook: CF Access app, tunnel token issuance, rate-limit rules, smoke-test extension (#53). |
+
+## Out of scope
+
+- `cloudflared`-fronted exposure of Buzz — implemented in
+  [servers/buzz-dvogeldev-access.md](buzz-dvogeldev-access.md)
+  ([#53](https://github.com/dvogeldev/remote-dev/issues/53)). This runbook
+  covers the loopback-only posture; the public-hostname path is opt-in via
+  `BUZZ_PUBLIC_HOSTNAME` in `~/.buzz/.env`.
+- TLS via the upstream `compose.caddy.yml` override. Operator reaches the
+  relay through Tailscale or SSH; no public TLS.
+- Multi-relay / multi-community mode. The single-host, single-relay,
+  single-community self-host default is the v0 shape per ADR #0011.
+- Production observability (Prometheus + alerting). Metrics are exposed on
+  `127.0.0.1:9102`; wiring them into anything is a follow-up.
+- Anti-spam / rate-limit policy. The relay ships only `AlwaysAllowRateLimiter`
+  per research; v0 mitigates by loopback-only bind. With the public hostname
+  (see #53), CF-edge rate limits replace the loopback mitigation.
+- Mobile clients, approval-gate workflow plumbing, attachments. Out of v0 per
+  the map's Destination clause.
+- An installed Postgres backup cron. v0 uses a calendar reminder + the
+  manual procedure in "Backups" above. Revisit per ADR #0012 Q9.
+- Off-host backup of the laptop `pass` tree itself. ADR-0007 establishes
+  pass as the secret source; backing up pass (which holds everything
+  else) is its own follow-up, separate from #52.
+
+## Done means
+
+- `scripts/install-buzz.sh` runs cleanly on a fresh `grr` with `pass buzz/relay/private-key` and `pass buzz/postgres-dumps/<latest>.sql` already in place (recovery story per ADR #0012 + #51).
+- `docker compose ps` on grr shows `relay`, `postgres`, `redis`, `minio`, `minio-init` all `running` (or `exited (0)` for `minio-init`).
+- `curl -fsS http://127.0.0.1:8080/_liveness` on grr returns the liveness line.
+- `scripts/smoke-buzz.sh` shows "AUTH challenge received" or a relay response in any of its three checks.
+- After `docker compose down -v` + re-running `install-buzz.sh`, the previously-stored channel + messages + members reappear (verified commit `<follow-up>`).
+- An operator-created room in the Buzz desktop client results in Hermes responding to an `@hermes` mention within a few seconds (round-trip text demo, the [#36](https://github.com/dvogeldev/remote-dev/issues/36) destination gate).
+- This runbook is committed and linked from [#47](https://github.com/dvogeldev/remote-dev/issues/47).
