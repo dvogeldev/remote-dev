@@ -13,7 +13,7 @@ When a markdown file will be ingested by an LLM (agent context, system prompt, s
 Mermaid is far more token-efficient than prose or ASCII art for structural information, and LLMs already parse Mermaid natively:
 
 | Form | Approx. tokens for a 6-node topology | LLM-parsable structure |
-|---|---|---|
+| --- | --- | --- |
 | ASCII box diagram | ~250–400 | No — visual only |
 | Prose description | ~300–500 | Partial |
 | Mermaid `graph TD` | ~60–90 | Yes — nodes, edges, labels are semantic |
@@ -44,7 +44,7 @@ Follow the diagram with prose that names the components and explains flows. Do n
 
 ### Syntax rules
 
-- Use simple shapes: `[]`, `()`, `{}`, `>(()))`. Avoid `[/parallelogram/]` and `[\trapezoid\]` unless required.
+- Use simple shapes: `[]`, `()`, `{}`, `>(()))`. Avoid `[/parallelogram/]` and `[\\trapezoid\\]` unless required.
 - Label edges with `-->|verb|` so flows are machine-readable.
 - Group with `subgraph` for subsystems.
 - Keep one diagram per concept. Split rather than nest `graph TD` inside a node.
@@ -52,4 +52,4 @@ Follow the diagram with prose that names the components and explains flows. Do n
 
 ### Reference example
 
-`references/system-diagram.md` (container-first dev topology) and the architecture diagram in `convos/minimax-playbook-hermes.md` §0 are being converted to Mermaid under this rule. When converting an existing ASCII diagram, replace it (do not append alongside) and archive the ASCII version only if it carries information the Mermaid cannot express — almost always it does not.
+`references/historical/system-diagram-container-first.md` (archived rejected topology; see also stub `references/system-diagram.md`) and the architecture diagram in `convos/minimax-playbook-hermes.md` §0 are being converted to Mermaid under this rule. When converting an existing ASCII diagram, replace it (do not append alongside) and archive the ASCII version only if it carries information the Mermaid cannot express — almost always it does not.
