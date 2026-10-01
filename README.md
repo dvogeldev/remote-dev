@@ -13,13 +13,13 @@ Skills repo for remote development tooling: devcontainers, dotfiles, and related
 | `docs/adr/` | Architecture decision records |
 | `docs/agents/` | Guidance for coding agents: issue tracker, triage labels, domain docs |
 | `research/` | Background research notes (Hermes API surface, Buzz self-host, web clients) |
-| `references/` | Hardware and system specs, coding specs, system diagram |
-| `skills/` | Agent skills (e.g. `drain-inbox`) |
+| `references/` | Hardware/coding specs; `system-diagram.md` stub; archived rejected topology under `references/historical/` |
+| `skills/` | **First-party in this repo:** `drain-inbox` only. `skills-lock.json` lists external Hermes Skills Hub / pack pins — those trees are **not** vendored here unless installed on the VPS. |
 | `convos/` | Captured conversations / notes |
 
 ## Core concepts
 
-- **Host plane** — the Ubuntu user session that survives rebuilds: SSH, Docker Engine, Herdr, the bounce kit, mise, git, the Hermes process, `systemd --user`.
+- **Host plane** — the Ubuntu user session that survives container rebuilds: SSH, Docker Engine, Herdr, the bounce kit, mise, git, the Hermes process, `systemd --user`.
 - **Project container** — a per-repo Dev Container holding that project's toolchain and services; rebuildable, not the daily mux.
 - **Herdr** — the always-on terminal multiplexer on the host plane; the operator's normal coding path is remote attach from the laptop.
 - **Hermes** — the Nous agent process (CLI, sessions, skills, profiles).
