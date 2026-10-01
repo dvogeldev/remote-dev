@@ -18,4 +18,6 @@ ADR-0004 keeps Hermes `terminal.backend: local` so sessions see `~/agency` and `
 
 ## Related
 - ADR-0004, ADR-0003, `CONTEXT.md`
+- Ops checklist: [`hermes-ops-checklist.md`](hermes-ops-checklist.md)
+- Current diagram: `references/system-diagram.md`
 - Archived diagram: `references/historical/system-diagram-container-first.md`
