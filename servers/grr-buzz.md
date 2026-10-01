@@ -246,3 +246,47 @@ With the demo room open in the Buzz client and Hermes connected:
 
 This is the round-trip text demo [#36](https://github.com/dvogeldev/remote-dev/issues/36) calls for.
 
+## Operating
+
+### Manage the stack
+
+```bash
+ssh grr
+systemctl --user status|start|stop|restart buzz.service
+cd ~/.buzz && docker compose ps
+cd ~/.buzz && docker compose logs -f relay
+cd ~/.buzz && docker compose logs -f relay postgres redis minio
+```
+
+The unit runs `docker compose up` in the foreground; **stopping the unit
+stops the containers**. If you want the stack up but the unit stopped,
+restart the unit.
+
+### Upgrade the relay image
+
+```bash
+ssh grr
+cd ~/.buzz
+# 1. snapshot .env first (load-bearing; the relay key lives here)
+cp .env .env.bak.$(date +%Y%m%d)
+# 2. stop the unit (so the foreground compose process releases the relay)
+systemctl --user stop buzz.service
+# 3. pull the new image
+docker compose pull relay
+# 4. start the unit back up (migrations auto-run if BUZZ_AUTO_MIGRATE=true)
+systemctl --user start buzz.service
+# 5. validate
+curl -fsS http://127.0.0.1:8080/_liveness
+docker compose logs --tail=120 relay
+```
+
+Per upstream guidance, before bumping:
+
+- Read the relay release notes (`block/buzz` GitHub releases, `relay-*`
+  filter once those tags land).
+- Confirm `BUZZ_RELAY_PRIVATE_KEY`, `BUZZ_GIT_HOOK_HMAC_SECRET`, DB /
+  Redis / S3 secrets in `.env` haven't changed (Compose will preserve them
+  but verify after the restart).
+- For a `:main` bump, expect new migrations; for a `:sha-<7>` bump on a
+  release tag, expect a release-notes-driven change set.
+
