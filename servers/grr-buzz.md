@@ -89,3 +89,160 @@ tunnel token issuance, rate-limit rules, smoke-test extension). ADR
 [0013](../docs/adr/0013-buzz-public-hostname-via-cloudflare.md) locks the
 two-tunnel shape and the Host-header rewrite.
 
+## Day-one procedure
+
+### Phase 1 — Install (AFK from the laptop)
+
+```bash
+cd /path/to/remote-dev
+HOST=grr ./scripts/install-buzz.sh         # Buzz relay on grr
+HOST=grr ./scripts/enable-hermes-buzz.sh   # Hermes gateway → buzz plugin enabled
+```
+
+Two scripts, both laptop-driven via SSH to grr.
+
+**`install-buzz.sh`** lays down `~/.buzz/{compose.yml,.env.example}`, the
+systemd user unit `~/.config/systemd/user/buzz.service`, enables linger
+for `david` on grr, generates the relay keypair (via `nak key generate`,
+stores in `pass buzz/relay/private-key`), generates backing-service
+secrets, sets `BUZZ_DOMAIN=127.0.0.1` and related URLs, and prompts you
+to set `RELAY_OWNER_PUBKEY` in `~/.buzz/.env` before continuing.
+
+**`enable-hermes-buzz.sh`** deploys a small Python shim at
+`~/.local/bin/buzz` (see `host-plane/buzz-shim/buzz`) that satisfies the
+plugin's hard-fail on `buzz` CLI absence — see "Why a buzz shim" below.
+It then writes `BUZZ_RELAY_URL`, `BUZZ_TRANSPORT`, `BUZZ_HOME_CHANNEL`,
+`BUZZ_CHANNELS`, `BUZZ_ALLOWED_USERS`, `BUZZ_CLI_PATH` into
+`~/.hermes/.env` (Hermes's keypair was already there per #46), sets
+`gateway.platforms.buzz.enabled: true` in `~/.hermes/config.yaml`, runs
+`hermes gateway install` to create `hermes-gateway.service`, and starts
+it.
+
+If `install-buzz.sh` stops at the `RELAY_OWNER_PUBKEY` gate:
+
+```bash
+ssh grr '$EDITOR ~/.buzz/.env'         # set RELAY_OWNER_PUBKEY=<operator-hex>
+HOST=grr ./scripts/install-buzz.sh     # resumes: pull + start unit + healthcheck wait
+HOST=grr ./scripts/enable-hermes-buzz.sh  # then enable Hermes's buzz plugin
+```
+
+The end state: `buzz.service` AND `hermes-gateway.service` both active,
+`docker compose ps` shows all five containers healthy, and
+`~/.hermes/logs/gateway.log` shows `✓ buzz connected`.
+
+### Why a buzz shim (not `buzz-cli` from source)
+
+The bundled Hermes `buzz` plugin's `connect()` hard-fails if `BUZZ_CLI_PATH`
+(or `buzz` on PATH) is missing — regardless of `BUZZ_TRANSPORT`. The real
+`buzz-cli` is a Rust crate shipped from `block/buzz` (not in the relay
+image; not a standalone GitHub release); building it from source on grr
+requires installing Rust + cloning the repo + ~10 minutes of compile
+time, which is a poor trade for a v0 inbound-only demo.
+
+The shim at `host-plane/buzz-shim/buzz` implements the minimum CLI
+surface the plugin needs (`users get`, `channels list`, `messages get`,
+`dms list`, `version`) with the same JSON contracts as the real
+`buzz-cli`. Inbound via WebSocket works without the real CLI. **Outbound
+sends** (Hermes → Buzz) fail with a JSON error on stderr — for v0
+inbound demo that's fine; for Hermes to reply in #49, the operator
+builds the real CLI:
+
+```bash
+ssh grr
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"
+cargo install --git https://github.com/block/buzz --bin buzz-cli --locked
+install -m 0755 "$HOME/.cargo/bin/buzz-cli" /usr/local/bin/buzz
+rm ~/.local/bin/buzz   # the shim becomes obsolete
+systemctl --user restart hermes-gateway.service
+```
+
+### Phase 2 — Admin bootstrap (HITL, do these in order on grr)
+
+**2.1 Confirm Hermes's pubkey is on the VPS.**
+
+```bash
+ssh grr 'cat ~/.hermes/nostr.npub'
+```
+
+If empty, run `scripts/unwrap-hermes-env.sh` from the laptop first (this
+unwraps `nostr/hermes-buzz/private-key` from pass into `~/.hermes/.env` and
+the chezmoi mirror lays down the npub/nsec files; see ADR #0010).
+
+**2.2 Register Hermes as a Bot.**
+
+```bash
+ssh grr
+cd ~/.buzz
+hermes_hex=$(nak pubkey "$(grep '^BUZZ_PRIVATE_KEY=' ~/.hermes/.env | cut -d= -f2-)")
+docker compose exec relay buzz-admin add-member \
+    --pubkey "$hermes_hex" --role bot
+```
+
+This is the bootstrap that makes NIP-42 AUTH from `BUZZ_PRIVATE_KEY`
+accepted by the relay. (Requires `nak` on grr or do the equivalent with
+`python -c` against the hex pubkey derivation.)
+
+**2.3 Open the Buzz desktop client from the laptop.**
+
+The relay is loopback-only. Pick one path:
+
+- **SSH tunnel** — `ssh -L 3000:127.0.0.1:3000 grr`, then point the client
+  at `ws://127.0.0.1:3000`. The Host header will be `127.0.0.1:3000`,
+  which matches `BUZZ_DOMAIN=127.0.0.1` on the relay.
+- **Tailscale** — only works after adding `127.0.0.1 grr-remote-dev-01`
+  to the laptop's `/etc/hosts` (see the BUZZ_DOMAIN gotcha above). Then
+  `ws://grr-remote-dev-01:3000` resolves through to the loopback relay.
+
+Sign in with the operator's Nostr keypair (the one whose pubkey is in
+`RELAY_OWNER_PUBKEY`).
+
+**2.4 Create the demo room.**
+
+In the Buzz desktop UI: **create a new room**, name it (e.g. `hermes-room`),
+and copy its UUID.
+
+**2.5 Wire the room into Hermes.**
+
+On grr, add the room to `~/.hermes/.env` and restart the gateway:
+
+```bash
+ssh grr
+room=<paste-uuid-here>
+echo "BUZZ_HOME_CHANNEL=$room"  >> ~/.hermes/.env
+echo "BUZZ_CHANNELS=[$room]"    >> ~/.hermes/.env
+# BUZZ_RELAY_URL defaults to ws://127.0.0.1:3000 (matches BUZZ_DOMAIN); set
+# explicitly only if you need a different relay URL.
+# echo "BUZZ_RELAY_URL=ws://127.0.0.1:3000" >> ~/.hermes/.env
+systemctl --user restart hermes-dashboard.service
+```
+
+From this point Hermes (the gateway) sees the room and responds to
+@-mentions per the v0 policy (no DMs, mention-gated). See #43 for the room
+semantics that produced this shape.
+
+### Phase 3 — Verify
+
+**3.1 Smoke from the laptop.**
+
+```bash
+HOST=grr ./scripts/smoke-buzz.sh
+```
+
+Four checks: HTTP liveness/readiness on the VPS, WS upgrade + NIP-42 AUTH
+challenge on 127.0.0.1:3000, event round-trip (relay returns OK/CLOSED —
+proves the wire is alive). Wire is alive if any of the four produces a
+relay response.
+
+**3.2 Hermes round-trip (the official demo gate).**
+
+With the demo room open in the Buzz client and Hermes connected:
+
+1. As the operator, post a message in the room: `@hermes hello`.
+2. Hermes replies (per the v0 gateway config).
+3. Check `journalctl --user -u hermes-dashboard.service -n 80` for the
+   gateway log line that proves it received the relay event and dispatched
+   the reply.
+
+This is the round-trip text demo [#36](https://github.com/dvogeldev/remote-dev/issues/36) calls for.
+
