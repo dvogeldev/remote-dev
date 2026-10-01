@@ -295,7 +295,7 @@ Per upstream guidance, before bumping:
 **When**: workspace move (new VPS, new region, fresh install after a deploy
 ends) — never otherwise. The relay identity is per-deployment, not a
 human. Past relay-signed events become unverifiable; that's the point of
-that workspace move.
+a workspace move.
 
 **On the laptop**:
 
@@ -483,8 +483,8 @@ cat "$HOME/.password-store/buzz/postgres-dumps/${dump}" \
 ```
 
 Or just re-run `install-buzz.sh` — it detects the latest dump in pass,
-restores automatically before bringing the relay up. See "Recover from a
-fresh VPS" below.
+restores automatically before bringing the relay up. See "Recover from
+a fresh VPS" below.
 
 This procedure is **manual**, not a cron. The install scripts do NOT
 install a Postgres backup cron for v0 — the operator's calendar reminder
