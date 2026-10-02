@@ -8,10 +8,10 @@
 | OS             | Ubuntu 24.04 LTS (Noble Numbat) |
 | Provider       | RackGenius           |
 | Location       | Grand Rapids, MI     |
-| CPU            | TBD                  |
-| RAM            | TBD                  |
-| Disk           | TBD                  |
-| Swap           | 1 GB                 |
+| CPU            | 3 vCPU (AMD Ryzen 9 7950X host; Thread(s) per core 1) |
+| RAM            | 11 GiB               |
+| Disk           | 141 G (`/dev/vda3`, ~17 G used / 124 G avail) |
+| Swap           | 1.0 GiB              |
 | SSH Key        | Rackgenius           |
 
 ## Network
@@ -53,7 +53,7 @@
 
 ## Capacity note
 
-Fill CPU/RAM/disk above when known. Community Hermes guidance often cites ~1 GB minimum / ~2–4 GB comfortable when containers are involved; this host also runs Buzz (Postgres/Redis/MinIO) beside local Hermes shell.
+Measured on host 2026-10-02 (`nproc` / `free -h` / `df -h /` / `lscpu`). Community Hermes guidance often cites ~1 GB minimum / ~2–4 GB comfortable when containers are involved; this host also runs Buzz (Postgres/Redis/MinIO) beside local Hermes shell. With ~11 GiB RAM and ~124 G free disk, headroom looks comfortable for current v0 load — re-check `free -h` / `df -h /` after pin or major Buzz bumps.
 
 ## Related
 
