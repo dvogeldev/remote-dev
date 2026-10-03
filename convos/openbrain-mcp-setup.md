@@ -12,7 +12,7 @@ A personal "second brain" in the Nate B. Jones pattern: **Supabase Postgres + pg
 
 - **Host:** Supabase project `crgdufvwyfgbzobtnwcw`
 - **Source repo (local):** `~/projects/openbrain` — Deno edge functions + Node bulk-ingest scripts
-- **Embeddings:** OpenRouter (`openai/text-embedding-3-small`); metadata extraction via `openai/gpt-4o-mini`
+- **Embeddings:** Nous Portal (`openai/text-embedding-3-small`); metadata extraction via `openai/gpt-4o-mini`
 - **Semantic search:** Supabase RPC `match_thoughts` (pgvector cosine similarity, default threshold 0.3)
 
 ## 2. Supabase edge functions (`~/projects/openbrain/supabase/functions/`)
@@ -41,7 +41,7 @@ Note: `capture_thought` runs an LLM metadata-extraction pass (topics, people, ty
 - `ingest-notes.js` — markdown notes from `~/00-staging/notes` (parent dir only) directly into Supabase
 - `ingest-grok.js` — x.ai/Grok conversation export (`~/prod-grok-backend.json`, MongoDB-style timestamps) into Supabase
 
-Both use `SUPABASE_SERVICE_ROLE_KEY` + `OPENROUTER_API_KEY` from the local `.env`. These are bulk paths only; the day-to-day write path is the MCP `capture_thought` tool.
+Both use `SUPABASE_SERVICE_ROLE_KEY` + `NOUS_API_KEY` from the local `.env`. These are bulk paths only; the day-to-day write path is the MCP `capture_thought` tool.
 
 ## 4. Which agents are wired to it (MCP clients)
 
@@ -56,9 +56,9 @@ Connection string is the same in both: `https://crgdufvwyfgbzobtnwcw.supabase.co
 
 | Secret | Where it lives |
 |---|---|
-| `MCP_ACCESS_KEY` | Supabase function secret (env var on the function) |
+| `MCP_ACCESS_KEY`, `NOUS_API_KEY` | Supabase function secret (env var on the function) |
 | Supabase anon key (in MCP URL) | `~/.config/opencode/opencode.json`, `~/.config/kilo/kilo.jsonc` |
-| `SUPABASE_SERVICE_ROLE_KEY`, `OPENROUTER_API_KEY` | `~/projects/openbrain/.env` |
+| `SUPABASE_SERVICE_ROLE_KEY`, `NOUS_API_KEY` | `~/projects/openbrain/.env` |
 | DigitalOcean token (Kilo stdio MCP) | `~/.config/kilo/kilo.jsonc` — **never copy into this repo** |
 
 Per ADR 0007, the laptop `pass` tree is the source of truth for secrets.
